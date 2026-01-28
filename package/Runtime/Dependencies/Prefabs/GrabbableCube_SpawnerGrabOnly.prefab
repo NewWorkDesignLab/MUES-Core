@@ -21,7 +21,7 @@ GameObject:
   - component: {fileID: 7454053642467056545}
   - component: {fileID: 7745736150562557064}
   m_Layer: 0
-  m_Name: GrabbableCube
+  m_Name: GrabbableCube_SpawnerGrabOnly
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -75,7 +75,7 @@ MeshRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: fadf4ab759020d549bdc810492267a97, type: 2}
+  - {fileID: 2100000, guid: 9de732f20487d8742b29714db73dc254, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -132,20 +132,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 644c0f4d95549924da31a6e357dbbe88, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::HSXR_NetworkedTransform
-  useAnchorSmoothing: 1
-  _LocalAnchorOffset: {x: 0, y: 0, z: 0}
-  _LocalAnchorRotationOffset: {x: 0, y: 0, z: 0, w: 0}
   initialized: 0
   spawnerOnlyGrab: 1
-  _IsGrabbable:
-    _value: 0
-  _SpawnerControlsTransform:
-    _value: 0
-  _SpawnerPlayerId: -1
-  _ModelFileName:
-    _length: 0
-    _data:
-      Data: 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 --- !u!54 &6438061677543809598
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -195,6 +183,7 @@ MonoBehaviour:
   _rigidbody: {fileID: 6438061677543809598}
   _kinematicWhileSelected: 1
   _throwWhenUnselected: 1
+  _forceKinematicDisabled: 0
 --- !u!114 &6499941591413910298
 MonoBehaviour:
   m_ObjectHideFlags: 0
