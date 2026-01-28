@@ -10,6 +10,7 @@ GameObject:
   m_Component:
   - component: {fileID: 2702897438672028449}
   - component: {fileID: 8556975745353636632}
+  - component: {fileID: 5959233316792204864}
   - component: {fileID: 3852230879525603453}
   m_Layer: 0
   m_Name: Networking Controls
@@ -61,6 +62,19 @@ MonoBehaviour:
   isConnected: 0
   isJoiningAsClient: 0
   heightCalibrationOffset: 0
+--- !u!114 &5959233316792204864
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1693407653775121855}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8491d94bc9837334ca266bc14e97d235, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlayerMarkerSpawner
+  debugMode: 1
 --- !u!114 &3852230879525603453
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -85,7 +99,6 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 4736593261193815629}
-  - component: {fileID: 6248644522190658506}
   - component: {fileID: 1147005730707874076}
   - component: {fileID: 7339383988741713568}
   - component: {fileID: 5173634373531307561}
@@ -113,19 +126,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 5171158537095396069}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &6248644522190658506
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 3795145792829675586}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 8491d94bc9837334ca266bc14e97d235, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::PlayerMarkerSpawner
-  debugMode: 1
 --- !u!114 &1147005730707874076
 MonoBehaviour:
   m_ObjectHideFlags: 0

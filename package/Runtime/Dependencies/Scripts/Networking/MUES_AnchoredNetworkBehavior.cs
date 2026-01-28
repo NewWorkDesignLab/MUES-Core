@@ -4,11 +4,6 @@ using UnityEngine;
 
 public abstract class MUES_AnchoredNetworkBehaviour : NetworkBehaviour
 {
-    [Header("Anchored Object Settings")]
-
-    [Tooltip("Whether to smoothly interpolate position and rotation when applying anchor transforms.")]
-    public bool useAnchorSmoothing = false;
-
     [HideInInspector][Networked] public Vector3 LocalAnchorOffset { get; set; }
     [HideInInspector][Networked] public Quaternion LocalAnchorRotationOffset { get; set; }
 
@@ -71,9 +66,7 @@ public abstract class MUES_AnchoredNetworkBehaviour : NetworkBehaviour
                     }
                     
                     if (net.anchorTransform != null && net.sceneParent == null)
-                    {
                         net.InitSceneParent();
-                    }
                 }
             }
 
@@ -129,7 +122,7 @@ public abstract class MUES_AnchoredNetworkBehaviour : NetworkBehaviour
         }
         catch { }
 
-        bool shouldSmooth = useAnchorSmoothing && !hasInputAuth;
+        bool shouldSmooth = !hasInputAuth;
 
         if (!shouldSmooth)
         {

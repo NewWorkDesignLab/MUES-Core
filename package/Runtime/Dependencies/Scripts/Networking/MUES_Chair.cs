@@ -1,14 +1,9 @@
 using Fusion;
-using Oculus.Interaction;
-using Oculus.Interaction.HandGrab;
 using System.Collections;
 using UnityEngine;
 
 public class MUES_Chair : MUES_AnchoredNetworkBehaviour
 {   
-    [Tooltip("If true, only the host can grab this chair.")]
-    public bool onlyHostCanGrab = true;
-
     [Tooltip("Base size (X, Z) of the detection box.")]
     public Vector2 detectionBaseSize = new Vector2(0.5f, 0.5f);
     
@@ -23,12 +18,7 @@ public class MUES_Chair : MUES_AnchoredNetworkBehaviour
     private Vector2 detectionOffset = Vector2.zero; // Offset of the detection box from the chair's pivot
     private readonly Collider[] _results = new Collider[1]; // Reusable array for overlap results
 
-    private Grabbable _grabbable;   // For general grab interactions
-    private GrabInteractable _grabInteractable; // For grab interactions
-    private HandGrabInteractable _handGrabInteractable; // For hand grab interactions
-
-    private bool _wasMasterClient; // Track master client status
-    private bool _isBeingGrabbed = false; // Track if chair is currently grabbed
+    private MUES_NetworkedTransform _networkedTransform; // Reference to the NetworkedTransform for grab state
 
     public override void Spawned()
     {
@@ -37,28 +27,9 @@ public class MUES_Chair : MUES_AnchoredNetworkBehaviour
         if (MUES_RoomVisualizer.Instance != null && !MUES_RoomVisualizer.Instance.chairsInScene.Contains(this))
             MUES_RoomVisualizer.Instance.chairsInScene.Add(this);
 
-        _grabbable = GetComponent<Grabbable>();
-        _grabInteractable = GetComponent<GrabInteractable>();
-        _handGrabInteractable = GetComponent<HandGrabInteractable>();
-
-        SetGrabbableComponentsEnabled(false);
-
-        if (_grabbable != null)
-            _grabbable.WhenPointerEventRaised += OnPointerEvent;
-
-        _wasMasterClient = Runner.IsSharedModeMasterClient;
+        _networkedTransform = GetComponent<MUES_NetworkedTransform>();
         
         StartCoroutine(InitChairRoutine());
-    }
-
-    /// <summary>
-    /// Helper method to enable/disable all grabbable-related components at once.
-    /// </summary>
-    private void SetGrabbableComponentsEnabled(bool enabled)
-    {
-        if (_grabbable != null) _grabbable.enabled = enabled;
-        if (_grabInteractable != null) _grabInteractable.enabled = enabled;
-        if (_handGrabInteractable != null) _handGrabInteractable.enabled = enabled;
     }
 
     /// <summary>
@@ -91,72 +62,17 @@ public class MUES_Chair : MUES_AnchoredNetworkBehaviour
         }
 
         initialized = true;
-        UpdateGrabbableState();
     }
 
     public override void Render()
     {
         if (initialized && !Object.HasStateAuthority && !Object.HasInputAuthority && anchorReady)
             AnchorToWorld();
-
-        if (Runner.IsSharedModeMasterClient != _wasMasterClient)
-        {
-            _wasMasterClient = Runner.IsSharedModeMasterClient;
-            ConsoleMessage.Send(true, $"Chair - Master client status changed, updating grabbable state.", Color.cyan);
-            UpdateGrabbableState();
-        }
     }
-
-    /// <summary>
-    /// Handles pointer events for grab detection.
-    /// </summary>
-    private void OnPointerEvent(PointerEvent evt)
-    {
-        switch (evt.Type)
-        {
-            case PointerEventType.Select:
-                _isBeingGrabbed = true;
-                break;
-            case PointerEventType.Unselect:
-            case PointerEventType.Cancel:
-                _isBeingGrabbed = false;
-                break;
-        }
-    }
-
-    /// <summary>
-    /// Updates grabbable state based on hostCanGrab setting and client type.
-    /// </summary>
-    private void UpdateGrabbableState()
-    {
-        if (_grabbable == null)
-        {
-            _grabbable = GetComponent<Grabbable>();
-            _grabInteractable = GetComponent<GrabInteractable>();
-            _handGrabInteractable = GetComponent<HandGrabInteractable>();
-        }
-        
-        if (_grabbable == null && _grabInteractable == null && _handGrabInteractable == null) 
-            return;
-
-        bool canGrab = !onlyHostCanGrab || Runner.IsSharedModeMasterClient;
-
-        SetGrabbableComponentsEnabled(canGrab);
-
-        ConsoleMessage.Send(true, $"Chair - Grabbable {(canGrab ? "enabled" : "disabled")} (onlyHostCanGrab={onlyHostCanGrab}, isMaster={Runner.IsSharedModeMasterClient})", Color.cyan);
-    }
-
-    /// <summary>
-    /// Public method to force update grabbable state (called after migration).
-    /// </summary>
-    public void RefreshGrabbableState() => UpdateGrabbableState();
 
     public override void Despawned(NetworkRunner runner, bool hasState)
     {
         base.Despawned(runner, hasState);
-
-        if (_grabbable != null)
-            _grabbable.WhenPointerEventRaised -= OnPointerEvent;
 
         if (MUES_RoomVisualizer.Instance != null && MUES_RoomVisualizer.Instance.chairsInScene != null)
         {
@@ -185,7 +101,9 @@ public class MUES_Chair : MUES_AnchoredNetworkBehaviour
 
         if (hasAuth)
         {
-            if (_isBeingGrabbed)
+            bool isBeingGrabbed = _networkedTransform != null && IsNetworkedTransformGrabbed();
+            
+            if (isBeingGrabbed)
                 WorldToAnchor();
 
             Vector3 localOffset = new Vector3(detectionOffset.x, detectionHeight * 0.5f, detectionOffset.y);
@@ -205,6 +123,21 @@ public class MUES_Chair : MUES_AnchoredNetworkBehaviour
             }
             catch { }
         }
+    }
+
+    /// <summary>
+    /// Checks if the NetworkedTransform is currently being grabbed.
+    /// </summary>
+    private bool IsNetworkedTransformGrabbed()
+    {
+        if (_networkedTransform == null) return false;
+        
+        var field = typeof(MUES_NetworkedTransform).GetField("_isBeingGrabbed", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        
+        if (field != null)
+            return (bool)field.GetValue(_networkedTransform);
+        
+        return false;
     }
 
     private void OnDrawGizmos()

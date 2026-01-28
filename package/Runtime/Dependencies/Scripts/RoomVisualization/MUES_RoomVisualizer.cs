@@ -271,7 +271,7 @@ public class MUES_RoomVisualizer : MonoBehaviour
         floor.layer = floorLayer;
 
         Destroy(room.gameObject);
-        yield return SwitchToChairPlacement(room);
+        yield return SwitchToChairPlacement(true);
     }
 
     /// <summary>
@@ -609,96 +609,6 @@ public class MUES_RoomVisualizer : MonoBehaviour
     #region Scene Mesh Data Serialization - Place
 
     /// <summary>
-    /// Reads room data from a binary file for sending. (HOST ONLY)         -- Currently unused. --
-    /// </summary>
-    public void LoadRoomDataFromFile(string filePath)
-    {
-        if (string.IsNullOrEmpty(filePath))
-        {
-            Debug.LogError("[MUES_RoomVisualizer] LoadRoomDataFromFile: filePath is null or empty.");
-            return;
-        }
-        try
-        {
-            using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
-            using (var br = new BinaryReader(fs))
-            {
-                int fileVersion = br.ReadInt32();
-
-                int anchorCount = br.ReadInt32();
-                var anchorList = new List<AnchorTransformData>(anchorCount);
-
-                for (int i = 0; i < anchorCount; i++)
-                {
-                    var entry = new AnchorTransformData();
-                    entry.name = br.ReadString();
-                    entry.type = br.ReadInt32();
-                    entry.anchorTransform = ReadTransformation(br);
-                    entry.prefabTransform = ReadTransformation(br);
-
-                    anchorList.Add(entry);
-                }
-
-                VertexData[] floorVerts = ReadVertexArray(br);
-                int[] floorTris = ReadIntArray(br);
-
-                VertexData[] ceilingVerts = ReadVertexArray(br);
-                int[] ceilingTris = ReadIntArray(br);
-
-                ChairData chairData = ReadChairData(br);
-
-                var floorCeiling = new FloorCeilingData
-                {
-                    floorVertices = floorVerts,
-                    floorTriangles = floorTris,
-
-                    ceilingVertices = ceilingVerts,
-                    ceilingTriangles = ceilingTris
-                };
-
-                var roomData = new RoomData
-                {
-                    anchorTransformData = anchorList.ToArray(),
-                    floorCeilingData = floorCeiling
-                };
-
-                foreach (var t in chairData.chairTransforms)
-                    StartCoroutine(PlaceChair(t.ToPosition(), t.ToScale(), t.ToRotation()));
-
-                currentRoomData = roomData;
-
-                Debug.Log($"<color=lime>[MUES_RoomVisualizer] LoadRoomDataFromFile: Serialized room data from file: {filePath}</color>");
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError($"[MUES_RoomVisualizer] LoadRoomDataFromFile: Failed to read room data: {ex}");
-            return;
-        }
-
-        MUES_Networking.Instance.EnableJoining();
-    }
-
-    /// <summary>
-    /// Clears the current room visualization.
-    /// </summary>
-    public void ClearRoomVisualization()
-    {
-        foreach (var old in instantiatedRoomPrefabs)
-            if (old != null && old.transform != null)
-                Destroy(old.transform.gameObject);
-
-        instantiatedRoomPrefabs.Clear();
-        chairsInScene.Clear();
-        
-        if (virtualRoom != null)
-        {
-            Destroy(virtualRoom);
-            virtualRoom = null;
-        }
-    }
-
-    /// <summary>
     /// Loads a room from room data.
     /// </summary>
     public void InstantiateRoomGeometry()
@@ -816,42 +726,6 @@ public class MUES_RoomVisualizer : MonoBehaviour
         Vector3 scale = new Vector3(br.ReadSingle(), br.ReadSingle(), br.ReadSingle());
 
         return new TransformationData(pos, rot, scale);
-    }
-
-    /// <summary>
-    /// Reads a VertexData array from a binary reader.
-    /// </summary>
-    private VertexData[] ReadVertexArray(BinaryReader br)
-    {
-        int count = br.ReadInt32();
-        if (count <= 0)
-            return null;
-
-        var result = new VertexData[count];
-
-        for (int i = 0; i < count; i++)
-        {
-            Vector3 pos = new Vector3(
-                br.ReadSingle(),
-                br.ReadSingle(),
-                br.ReadSingle()
-            );
-
-            Vector3 normal = new Vector3(
-                br.ReadSingle(),
-                br.ReadSingle(),
-                br.ReadSingle()
-            );
-
-            Vector2 uv = new Vector2(
-                br.ReadSingle(),
-                br.ReadSingle()
-            );
-
-            result[i] = new VertexData(pos, normal, uv);
-        }
-
-        return result;
     }
 
     /// <summary>
@@ -1065,6 +939,25 @@ public class MUES_RoomVisualizer : MonoBehaviour
         yield return seq.WaitForCompletion();
 
         if (!isActive && _particleSystemRenderer != null) _particleSystemRenderer.enabled = false;
+    }
+
+    /// <summary>
+    /// Clears the current room visualization.
+    /// </summary>
+    public void ClearRoomVisualization()
+    {
+        foreach (var old in instantiatedRoomPrefabs)
+            if (old != null && old.transform != null)
+                Destroy(old.transform.gameObject);
+
+        instantiatedRoomPrefabs.Clear();
+        chairsInScene.Clear();
+
+        if (virtualRoom != null)
+        {
+            Destroy(virtualRoom);
+            virtualRoom = null;
+        }
     }
 
     /// <summary>

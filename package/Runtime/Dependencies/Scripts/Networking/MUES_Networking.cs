@@ -496,9 +496,7 @@ public class MUES_Networking : MonoBehaviour
         StartCoroutine(SpawnAvatarMarker(player));
 
         MUES_RoomVisualizer.Instance.HideSceneWhileLoading(false);
-
-        if (string.IsNullOrEmpty(MUES_RoomVisualizer.Instance.roomDataPath)) MUES_RoomVisualizer.Instance.CaptureRoom();
-        else MUES_RoomVisualizer.Instance.LoadRoomDataFromFile(MUES_RoomVisualizer.Instance.roomDataPath);
+        MUES_RoomVisualizer.Instance.CaptureRoom(); // later implementation: load room model from server
     }
 
     /// <summary>
@@ -1213,8 +1211,11 @@ public class MUES_Networking : MonoBehaviour
 
             if (obj.TryGetComponent<MUES_Chair>(out var chair))
             {
-                chair.RefreshGrabbableState();
-                ConsoleMessage.Send(debugMode, $"Migration: Refreshed Chair {obj.name}", Color.cyan);
+                if (obj.TryGetComponent<MUES_NetworkedTransform>(out var chairNetTransform))
+                {
+                    chairNetTransform.RefreshGrabbableState();
+                    ConsoleMessage.Send(debugMode, $"Migration: Refreshed Chair grabbable via NetworkedTransform {obj.name}", Color.cyan);
+                }
             }
 
             if (obj.TryGetComponent<MUES_NetworkedTransform>(out var netTransform))

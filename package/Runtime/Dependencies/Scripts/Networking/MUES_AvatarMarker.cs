@@ -5,6 +5,8 @@ using System.Collections;
 using TMPro;
 using UnityEngine;
 using Photon.Voice.Unity;
+using Oculus.Platform;
+using Oculus.Platform.Models;
 
 public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
 {
@@ -67,7 +69,6 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
     private Speaker voiceSpeaker;   // The Speaker component for the voice chat
 
     private bool isWaitingAfterMount = false; // Flag to delay visibility after HMD mount
-    private Vector3 originalNameTagLocalPos; // Original local position of name tag
     
     private string cachedPlayerName; // Locally cached player name for use when network state is unavailable
 
@@ -99,7 +100,6 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
                 ConsoleMessage.Send(debugMode, "HMD Mounted - Microphone unmuted.", Color.cyan);
             }
         }
-
     }
 
     /// <summary>
@@ -249,32 +249,12 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
         }
 
         if (nameTag != null)
-        {
-            originalNameTagLocalPos = nameTag.localPosition;
             nameSmoothRot = nameTag.rotation;
-        }
 
-        PlatformInit.GetEntitlementInformation(info =>
-        {
-            if (info.IsEntitled && !string.IsNullOrEmpty(info.OculusUser?.DisplayName))
-            {
-                PlayerName = info.OculusUser.DisplayName;
-                if (Object.HasInputAuthority) MUES_SessionMeta.Instance.RegisterPlayer(Object.InputAuthority, info.OculusUser.DisplayName);
-            }
-            else
-            {
-                PlayerName = fallbackPlayerName;
-                if (Object.HasInputAuthority) MUES_SessionMeta.Instance.RegisterPlayer(Object.InputAuthority, fallbackPlayerName);
-                ConsoleMessage.Send(debugMode, $"Avatar - Using fallback name: {fallbackPlayerName}", Color.yellow);
-            }
-
-            UpdateNameTagText();
-        });
+        yield return FetchOculusUsername();
 
         if (nameTag != null)
-        {
             nameTagCanvasGroup.alpha = 1f;
-        }
 
         SetupVoiceComponents();
 
@@ -286,22 +266,168 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
     }
 
     /// <summary>
+    /// Fetches the Oculus username using the Platform API with proper initialization.
+    /// </summary>
+    private IEnumerator FetchOculusUsername()
+    {
+        string fetchedName = null;
+        bool fetchComplete = false;
+
+        PlatformInit.GetEntitlementInformation(info =>
+        {
+            if (info.IsEntitled && !string.IsNullOrEmpty(info.OculusUser?.DisplayName))
+            {
+                fetchedName = info.OculusUser.DisplayName;
+                ConsoleMessage.Send(debugMode, $"Avatar - Got name from PlatformInit: {fetchedName}", Color.green);
+            }
+            fetchComplete = true;
+        });
+
+        float timeout = 3f;
+        float elapsed = 0f;
+
+        while (!fetchComplete && elapsed < timeout)
+        {
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+
+        if (!string.IsNullOrEmpty(fetchedName))
+        {
+            SetPlayerName(fetchedName);
+            yield break;
+        }
+
+        ConsoleMessage.Send(debugMode, "Avatar - PlatformInit failed, trying direct Oculus Platform API...", Color.yellow);
+
+        bool platformInitialized = false;
+        bool platformInitComplete = false;
+        bool userFetchComplete = false;
+        string platformError = null;
+
+        bool alreadyInitialized = false;
+        try
+        {
+            alreadyInitialized = Core.IsInitialized();
+        }
+        catch (Exception ex)
+        {
+            platformError = ex.Message;
+            ConsoleMessage.Send(debugMode, $"Avatar - Exception checking platform init: {ex.Message}", Color.red);
+        }
+
+        if (platformError != null)
+        {
+            SetPlayerName(fallbackPlayerName);
+            yield break;
+        }
+
+        if (!alreadyInitialized)
+        {
+            ConsoleMessage.Send(debugMode, "Avatar - Initializing Oculus Platform...", Color.yellow);
+            
+            try
+            {
+                Core.AsyncInitialize().OnComplete(msg =>
+                {
+                    platformInitialized = !msg.IsError;
+                    platformInitComplete = true;
+                    if (msg.IsError)
+                        ConsoleMessage.Send(debugMode, $"Avatar - Platform init error: {msg.GetError().Message}", Color.red);
+                    else
+                        ConsoleMessage.Send(debugMode, "Avatar - Oculus Platform initialized successfully.", Color.green);
+                });
+            }
+            catch (Exception ex)
+            {
+                ConsoleMessage.Send(debugMode, $"Avatar - Exception during platform init: {ex.Message}", Color.red);
+                SetPlayerName(fallbackPlayerName);
+                yield break;
+            }
+
+            timeout = 5f;
+            elapsed = 0f;
+
+            while (!platformInitComplete && elapsed < timeout)
+            {
+                elapsed += Time.deltaTime;
+                yield return null;
+            }
+        }
+        else
+        {
+            platformInitialized = true;
+            ConsoleMessage.Send(debugMode, "Avatar - Oculus Platform already initialized.", Color.cyan);
+        }
+
+        if (platformInitialized)
+        {
+            try
+            {
+                Users.GetLoggedInUser().OnComplete(userMsg =>
+                {
+                    if (!userMsg.IsError && userMsg.Data != null)
+                    {
+                        fetchedName = userMsg.Data.DisplayName;
+                        ConsoleMessage.Send(debugMode, $"Avatar - Got name from Oculus Platform: {fetchedName}", Color.green);
+                    }
+                    else
+                    {
+                        ConsoleMessage.Send(debugMode, $"Avatar - Failed to get user: {(userMsg.IsError ? userMsg.GetError().Message : "No data")}", Color.red);
+                    }
+                    userFetchComplete = true;
+                });
+            }
+            catch (Exception ex)
+            {
+                ConsoleMessage.Send(debugMode, $"Avatar - Exception fetching user: {ex.Message}", Color.red);
+                userFetchComplete = true;
+            }
+
+            timeout = 5f;
+            elapsed = 0f;
+            while (!userFetchComplete && elapsed < timeout)
+            {
+                elapsed += Time.deltaTime;
+                yield return null;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(fetchedName))
+            SetPlayerName(fetchedName);
+        else
+        {
+            ConsoleMessage.Send(debugMode, $"Avatar - Using fallback name: {fallbackPlayerName}", Color.yellow);
+            SetPlayerName(fallbackPlayerName);
+        }
+    }
+
+    /// <summary>
+    /// Sets the player name and registers it with the session.
+    /// </summary>
+    private void SetPlayerName(string name)
+    {
+        PlayerName = name;
+        if (Object.HasInputAuthority && MUES_SessionMeta.Instance != null)
+        {
+            MUES_SessionMeta.Instance.RegisterPlayer(Object.InputAuthority, name);
+        }
+        UpdateNameTagText();
+    }
+
+    /// <summary>
     /// Updates the nametag text with the current player name.
     /// </summary>
     private void UpdateNameTagText()
     {
         string name = PlayerName.ToString();
-        
+
         if (string.IsNullOrEmpty(name))
             name = fallbackPlayerName;
 
         cachedPlayerName = name;
-
-        if (nameText != null)
-            nameText.text = name;
-
-        if (nameTextAfk != null)
-            nameTextAfk.text = name + " (AFK)";
+        nameText.text = name;
+        nameTextAfk.text = name + " (AFK)";
 
         ConsoleMessage.Send(debugMode, $"Avatar - Nametag updated to: {name}", Color.cyan);
     }
@@ -323,22 +449,19 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
         if (!Object.HasInputAuthority)
             UpdateAfkMarker();
 
-        if (nameTagCanvasGroup != null)
-        {
-            float targetAlpha = showNameTag ? 1f : 0f;
-            if (Mathf.Abs(nameTagCanvasGroup.alpha - targetAlpha) > 0.01f)
-                nameTagCanvasGroup.alpha = Mathf.MoveTowards(nameTagCanvasGroup.alpha, targetAlpha, Time.deltaTime * 5f);
-        }
+        float targetAlpha = showNameTag ? 1f : 0f;
+        if (Mathf.Abs(nameTagCanvasGroup.alpha - targetAlpha) > 0.01f)
+            nameTagCanvasGroup.alpha = Mathf.MoveTowards(nameTagCanvasGroup.alpha, targetAlpha, Time.deltaTime * 5f);
 
         if (isCurrentlyStabilizing)
         {
-            if (headRenderer != null) headRenderer.enabled = false;
-            if (handRendererR != null) handRendererR.enabled = false;
-            if (handRendererL != null) handRendererL.enabled = false;
+            headRenderer.enabled = false;
+            handRendererR.enabled = false;
+            handRendererL.enabled = false;
             return;
         }
 
-        if (nameTag != null && showNameTag)
+        if (showNameTag)
         {
             var toCam = mainCam.position - nameTag.position;
             if (toCam.sqrMagnitude > 0.0001f)
@@ -353,39 +476,32 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
             nameTag.localPosition = Vector3.Lerp(nameTag.localPosition, nameTagTargetPos, Time.deltaTime * 5f);
         }
 
-        if (head != null)
-        {
-            var headTargetPos = transform.TransformPoint(HeadLocalPos);
-            var headTargetRot = transform.rotation * HeadLocalRot;
-            head.SetPositionAndRotation(headTargetPos, headTargetRot);
+        var headTargetPos = transform.TransformPoint(HeadLocalPos);
+        var headTargetRot = transform.rotation * HeadLocalRot;
+        head.SetPositionAndRotation(headTargetPos, headTargetRot);
 
-            if (headRenderer != null) headRenderer.enabled = showFullAvatar;
+        headRenderer.enabled = showFullAvatar;
+
+
+        handRendererR.enabled = showFullAvatar && RightHandVisible;
+
+        if (showFullAvatar && RightHandVisible)
+        {
+            var handTargetPosR = transform.TransformPoint(RightHandLocalPos);
+            var handSmoothPosR = Vector3.SmoothDamp(handMarkerRight.position, handTargetPosR, ref rightHandVel, handSmoothTime);
+            var handTargetRotR = transform.rotation * RightHandLocalRot;
+            rightHandSmoothRot = Quaternion.Slerp(handMarkerRight.rotation, handTargetRotR, Time.deltaTime * rotationSmoothSpeed);
+            handMarkerRight.SetPositionAndRotation(handSmoothPosR, rightHandSmoothRot);
         }
 
-        if (handMarkerRight != null)
+        handRendererL.enabled = showFullAvatar && LeftHandVisible;
+        if (showFullAvatar && LeftHandVisible)
         {
-            handRendererR.enabled = showFullAvatar && RightHandVisible;
-            if (showFullAvatar && RightHandVisible)
-            {
-                var handTargetPosR = transform.TransformPoint(RightHandLocalPos);
-                var handSmoothPosR = Vector3.SmoothDamp(handMarkerRight.position, handTargetPosR, ref rightHandVel, handSmoothTime);
-                var handTargetRotR = transform.rotation * RightHandLocalRot;
-                rightHandSmoothRot = Quaternion.Slerp(handMarkerRight.rotation, handTargetRotR, Time.deltaTime * rotationSmoothSpeed);
-                handMarkerRight.SetPositionAndRotation(handSmoothPosR, rightHandSmoothRot);
-            }
-        }
-
-        if (handMarkerLeft != null)
-        {
-            handRendererL.enabled = showFullAvatar && LeftHandVisible;
-            if (showFullAvatar && LeftHandVisible)
-            {
-                var handTargetPosL = transform.TransformPoint(LeftHandLocalPos);
-                var handSmoothPosL = Vector3.SmoothDamp(handMarkerLeft.position, handTargetPosL, ref leftHandVel, handSmoothTime);
-                var handTargetRotL = transform.rotation * LeftHandLocalRot;
-                leftHandSmoothRot = Quaternion.Slerp(handMarkerLeft.rotation, handTargetRotL, Time.deltaTime * rotationSmoothSpeed);
-                handMarkerLeft.SetPositionAndRotation(handSmoothPosL, leftHandSmoothRot);
-            }
+            var handTargetPosL = transform.TransformPoint(LeftHandLocalPos);
+            var handSmoothPosL = Vector3.SmoothDamp(handMarkerLeft.position, handTargetPosL, ref leftHandVel, handSmoothTime);
+            var handTargetRotL = transform.rotation * LeftHandLocalRot;
+            leftHandSmoothRot = Quaternion.Slerp(handMarkerLeft.rotation, handTargetRotL, Time.deltaTime * rotationSmoothSpeed);
+            handMarkerLeft.SetPositionAndRotation(handSmoothPosL, leftHandSmoothRot);
         }
     }
 
@@ -504,13 +620,12 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
             }
 
             Transform afkCanvas = afkMarker.transform.GetChild(0);
+
             if (afkCanvas != null && mainCam != null)
             {
                 Vector3 toCam = mainCam.position - afkCanvas.position;
                 if (toCam.sqrMagnitude > 0.0001f)
-                {
                     afkCanvas.rotation = Quaternion.LookRotation(toCam.normalized, Vector3.up);
-                }
             }
         }
         else afkMarker.SetActive(false);
@@ -524,8 +639,7 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
         var net = MUES_Networking.Instance;
 
         if (net == null) return false;
-        if (net.isRemote) return true;
-        if (IsRemote) return true;
+        if (net.isRemote || IsRemote) return true;
 
         return net.showAvatarsForColocated;
     }
@@ -535,7 +649,7 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
     /// </summary>
     private void SaveCurrentPositionForAfkMarker()
     {
-        if (head == null || anchor == null) return;
+        if (anchor == null) return;
 
         AfkMarkerLocalPos = anchor.InverseTransformPoint(head.position);
 
@@ -557,8 +671,7 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
         var net = MUES_Networking.Instance;
 
         if (net == null) return false;
-        if (net.isRemote) return true;
-        if (IsRemote) return true;
+        if (net.isRemote || IsRemote) return true;
 
         return net.showAvatarsForColocated;
     }
@@ -573,11 +686,7 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
         if (!IsHmdMounted || isCurrentlyStabilizing) return false;
 
         var net = MUES_Networking.Instance;
-        if (net == null) return false;
-
-        if (net.isRemote) return false;
-        if (IsRemote) return false;
-        if (net.showAvatarsForColocated) return false;
+        if (net == null || net.isRemote || IsRemote || net.showAvatarsForColocated) return false;
 
         return true;
     }
@@ -590,8 +699,7 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
         var net = MUES_Networking.Instance;
 
         if (net == null) return false;
-        if (net.isRemote) return true;
-        if (IsRemote) return true;
+        if (net.isRemote || IsRemote) return true;
 
         return net.showAvatarsForColocated;
     }
@@ -752,7 +860,7 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
     {
         voiceAudioSource.mute = IsMuted || Object.HasInputAuthority;
 
-        if (Object.HasInputAuthority && voiceRecorder != null)
+        if (Object.HasInputAuthority)
         {
             bool canTransmit = !IsMutedByHost && IsHmdMounted;
             voiceRecorder.TransmitEnabled = canTransmit;

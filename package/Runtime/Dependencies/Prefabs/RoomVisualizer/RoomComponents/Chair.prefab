@@ -397,12 +397,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::HSXR_Chair
   useAnchorSmoothing: 1
   initialized: 0
-  onlyHostCanGrab: 1
   detectionBaseSize: {x: 0.65, y: 0.65}
   detectionHeight: 2
   detectionLayer:
     serializedVersion: 2
-    m_Bits: 1024
+    m_Bits: 1280
 --- !u!114 &2190722491984919135
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -417,7 +416,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::HSXR_NetworkedObject
   useAnchorSmoothing: 1
   initialized: 0
-  spawnerOnlyGrab: 0
+  spawnerOnlyGrab: 1
 --- !u!114 &3703902051812622769
 MonoBehaviour:
   m_ObjectHideFlags: 0
