@@ -347,7 +347,7 @@ public class MUES_Networking : MonoBehaviour
 
         var primaryFloor = floorAnchors[0];
         Vector3 floorPos = new(primaryFloor.transform.position.x, rig.trackingSpace.position.y, primaryFloor.transform.position.z);
-        room.transform.position = floorPos;
+        //room.transform.position = floorPos;
 
         Quaternion flatRotation = Quaternion.Euler(0f, primaryFloor.transform.rotation.eulerAngles.y, 0f);
         spatialAnchorCore.InstantiateSpatialAnchor(roomMiddleAnchor, primaryFloor.transform.position, flatRotation);
@@ -403,8 +403,13 @@ public class MUES_Networking : MonoBehaviour
         else
         {
             ConsoleMessage.Send(debugMode, $"Anchor sharing failed: {share.Status} - Retrying", Color.red);
+
+            var room = FindFirstObjectByType<MRUKRoom>();
+            if (room != null) Destroy(room.gameObject);
+
             _mruk.ClearScene();
             spatialAnchorCore.EraseAllAnchors();
+
             await Task.Delay(500);
             InitSharedRoom();
         }
@@ -456,6 +461,9 @@ public class MUES_Networking : MonoBehaviour
     /// </summary>
     private void AbortLobbyCreation()
     {
+        var room = FindFirstObjectByType<MRUKRoom>();
+        if (room != null) Destroy(room.gameObject);
+
         _mruk.ClearScene();
         spatialAnchorCore.EraseAllAnchors();
         MUES_RoomVisualizer.Instance.HideSceneWhileLoading(false);
@@ -1045,19 +1053,27 @@ public class MUES_Networking : MonoBehaviour
         if (_runnerPrefab == null)
             _runnerPrefab = FindFirstObjectByType<NetworkRunner>();
 
+        NetworkRunner runnerInstance;
+
         if (_runnerPrefab != null && _runnerPrefab.gameObject != gameObject)
         {
-            var runnerInstance = Instantiate(_runnerPrefab);
+            runnerInstance = Instantiate(_runnerPrefab);
             _runnerPrefab.gameObject.SetActive(false);
             runnerInstance.name = "Session Runner";
             DontDestroyOnLoad(runnerInstance.gameObject);
-            return runnerInstance;
+        }
+        else
+        {
+            GameObject go = new("Session Runner");
+            runnerInstance = go.AddComponent<NetworkRunner>();
+            DontDestroyOnLoad(go);
         }
 
-        GameObject go = new("Session Runner");
-        var runner = go.AddComponent<NetworkRunner>();
-        DontDestroyOnLoad(go);
-        return runner;
+        var networkingEvents = MUES_NetworkingEvents.Instance;
+        if (networkingEvents != null)
+            runnerInstance.AddCallbacks(networkingEvents);
+
+        return runnerInstance;
     }
 
     /// <summary>

@@ -821,7 +821,7 @@ Canvas:
   m_OverridePixelPerfect: 0
   m_SortingBucketNormalizedSize: 0
   m_VertexColorAlwaysGammaSpace: 0
-  m_AdditionalShaderChannelsFlag: 25
+  m_AdditionalShaderChannelsFlag: 8
   m_UpdateRectTransformForStandalone: 0
   m_SortingLayerID: 0
   m_SortingOrder: 0
@@ -1172,9 +1172,43 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 672646c859c91c249b979bdf86b36516, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraMarkerFollower
+  _LocalAnchorOffset: {x: 0, y: 0, z: 0}
+  _LocalAnchorRotationOffset: {x: 0, y: 0, z: 0, w: 0}
   initialized: 0
+  _UserGuid:
+    _length: 0
+    _data:
+      Data: 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+  _PlayerName:
+    _length: 0
+    _data:
+      Data: 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
   destroyOwnMarker: 1
   debugMode: 1
+  _IsHmdMounted:
+    _value: 1
+  _IsStabilizing:
+    _value: 0
+  _IsMuted:
+    _value: 0
+  _IsMutedByHost:
+    _value: 0
+  _HeadLocalPos: {x: 0, y: 0, z: 0}
+  _HeadLocalRot: {x: 0, y: 0, z: 0, w: 0}
+  _RightHandLocalPos: {x: 0, y: 0, z: 0}
+  _LeftHandLocalPos: {x: 0, y: 0, z: 0}
+  _RightHandLocalRot: {x: 0, y: 0, z: 0, w: 0}
+  _LeftHandLocalRot: {x: 0, y: 0, z: 0, w: 0}
+  _RightHandVisible:
+    _value: 0
+  _LeftHandVisible:
+    _value: 0
+  _IsRemote:
+    _value: 0
+  _IsAfk:
+    _value: 0
+  _AfkMarkerLocalPos: {x: 0, y: 0, z: 0}
+  _AfkMarkerLocalRot: {x: 0, y: 0, z: 0, w: 0}
   voiceAudioSource: {fileID: 0}
 --- !u!114 &1942343534745959403
 MonoBehaviour:

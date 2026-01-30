@@ -9,6 +9,46 @@ public class MUES_NetworkingEvents : MonoBehaviour, INetworkRunnerCallbacks
     [Tooltip("Enable to see debug messages in the console.")]
     public bool debugMode = false;
 
+    private static MUES_NetworkingEvents _instance;
+    public static MUES_NetworkingEvents Instance => _instance;
+
+    private void Awake()
+    {
+        if (_instance == null)
+            _instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (_instance == this)
+            _instance = null;
+    }
+
+    /// <summary>
+    /// Registers this callback handler with the given NetworkRunner.
+    /// Call this from MUES_Networking when initializing the runner.
+    /// </summary>
+    public void RegisterWithRunner(NetworkRunner runner)
+    {
+        if (runner != null)
+        {
+            runner.AddCallbacks(this);
+            ConsoleMessage.Send(debugMode, "Registered NetworkingEvents callbacks with runner.", Color.cyan);
+        }
+    }
+
+    /// <summary>
+    /// Unregisters this callback handler from the given NetworkRunner.
+    /// </summary>
+    public void UnregisterFromRunner(NetworkRunner runner)
+    {
+        if (runner != null)
+        {
+            runner.RemoveCallbacks(this);
+            ConsoleMessage.Send(debugMode, "Unregistered NetworkingEvents callbacks from runner.", Color.cyan);
+        }
+    }
+
     #region General
 
     /// <summary>
@@ -34,7 +74,7 @@ public class MUES_NetworkingEvents : MonoBehaviour, INetworkRunnerCallbacks
             
             net.HandleHostJoin(player);
         }
-        else StartCoroutine(net.HandleNonHostJoin(player));
+        else net.StartCoroutine(net.HandleNonHostJoin(player));
     }
 
     /// <summary>

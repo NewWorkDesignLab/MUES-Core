@@ -15,11 +15,12 @@
         "meta.xr.mrutilitykit",
         "PhotonRealtime",
         "PhotonVoice",
+        "Fusion.Unity",
         "glTFast"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
-    "allowUnsafeCode": false,
+    "allowUnsafeCode": true,
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,

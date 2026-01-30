@@ -407,8 +407,12 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
             name = fallbackPlayerName;
 
         cachedPlayerName = name;
-        nameText.text = name;
-        nameTextAfk.text = name + " (AFK)";
+        
+        if (nameText != null)
+            nameText.text = name;
+        
+        if (nameTextAfk != null)
+            nameTextAfk.text = name + " (AFK)";
 
         ConsoleMessage.Send(debugMode, $"Avatar - Nametag updated to: {name}", Color.cyan);
     }
@@ -430,17 +434,22 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
         if (!Object.HasInputAuthority)
             UpdateAfkMarker();
 
-        float targetAlpha = showNameTag ? 1f : 0f;
-        if (Mathf.Abs(nameTagCanvasGroup.alpha - targetAlpha) > 0.01f)
-            nameTagCanvasGroup.alpha = Mathf.MoveTowards(nameTagCanvasGroup.alpha, targetAlpha, Time.deltaTime * 5f);
+        if (nameTagCanvasGroup != null)
+        {
+            float targetAlpha = showNameTag ? 1f : 0f;
+            if (Mathf.Abs(nameTagCanvasGroup.alpha - targetAlpha) > 0.01f)
+                nameTagCanvasGroup.alpha = Mathf.MoveTowards(nameTagCanvasGroup.alpha, targetAlpha, Time.deltaTime * 5f);
+        }
 
         if (isCurrentlyStabilizing)
         {
-            headRenderer.enabled = handRendererR.enabled = handRendererL.enabled = false;
+            if (headRenderer != null) headRenderer.enabled = false;
+            if (handRendererR != null) handRendererR.enabled = false;
+            if (handRendererL != null) handRendererL.enabled = false;
             return;
         }
 
-        if (showNameTag)
+        if (showNameTag && nameTag != null && mainCam != null)
         {
             var toCam = mainCam.position - nameTag.position;
             if (toCam.sqrMagnitude > 0.0001f)
@@ -455,24 +464,30 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
             nameTag.localPosition = Vector3.Lerp(nameTag.localPosition, nameTagTargetPos, Time.deltaTime * 5f);
         }
 
-        head.SetPositionAndRotation(
-            transform.TransformPoint(HeadLocalPos),
-            transform.rotation * HeadLocalRot);
+        if (head != null)
+        {
+            head.SetPositionAndRotation(
+                transform.TransformPoint(HeadLocalPos),
+                transform.rotation * HeadLocalRot);
+        }
 
-        headRenderer.enabled = showFullAvatar;
+        if (headRenderer != null)
+            headRenderer.enabled = showFullAvatar;
 
-        UpdateHandMarker(showFullAvatar && RightHandVisible, handMarkerRight, handRendererR, 
+        UpdateHandMarker(showFullAvatar && RightHandVisible, handMarkerRight, handRendererR,
             RightHandLocalPos, RightHandLocalRot, ref rightHandVel, ref rightHandSmoothRot);
-        
-        UpdateHandMarker(showFullAvatar && LeftHandVisible, handMarkerLeft, handRendererL, 
+
+        UpdateHandMarker(showFullAvatar && LeftHandVisible, handMarkerLeft, handRendererL,
             LeftHandLocalPos, LeftHandLocalRot, ref leftHandVel, ref leftHandSmoothRot);
     }
 
-    private void UpdateHandMarker(bool visible, Transform marker, MeshRenderer renderer, 
+    private void UpdateHandMarker(bool visible, Transform marker, MeshRenderer renderer,
         Vector3 localPos, Quaternion localRot, ref Vector3 vel, ref Quaternion smoothRot)
     {
-        renderer.enabled = visible;
-        if (!visible) return;
+        if (renderer != null)
+            renderer.enabled = visible;
+        
+        if (!visible || marker == null) return;
 
         var targetPos = transform.TransformPoint(localPos);
         var smoothPos = Vector3.SmoothDamp(marker.position, targetPos, ref vel, handSmoothTime);
@@ -562,6 +577,8 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
     /// </summary>
     private void UpdateAfkMarker()
     {
+        if (afkMarker == null) return;
+        
         if (Object.HasInputAuthority)
         {
             afkMarker.SetActive(false);
@@ -585,13 +602,16 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
             afkMarker.transform.SetPositionAndRotation(worldPos, worldRot);
         }
 
-        Transform afkCanvas = afkMarker.transform.GetChild(0);
-
-        if (afkCanvas != null && mainCam != null)
+        if (afkMarker.transform.childCount > 0)
         {
-            Vector3 toCam = mainCam.position - afkCanvas.position;
-            if (toCam.sqrMagnitude > 0.0001f)
-                afkCanvas.rotation = Quaternion.LookRotation(toCam.normalized, Vector3.up);
+            Transform afkCanvas = afkMarker.transform.GetChild(0);
+
+            if (afkCanvas != null && mainCam != null)
+            {
+                Vector3 toCam = mainCam.position - afkCanvas.position;
+                if (toCam.sqrMagnitude > 0.0001f)
+                    afkCanvas.rotation = Quaternion.LookRotation(toCam.normalized, Vector3.up);
+            }
         }
     }
 
@@ -610,7 +630,7 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
     /// </summary>
     private void SaveCurrentPositionForAfkMarker()
     {
-        if (anchor == null) return;
+        if (anchor == null || head == null) return;
 
         AfkMarkerLocalPos = anchor.InverseTransformPoint(head.position);
         AfkMarkerLocalRot = Quaternion.Inverse(anchor.rotation) * Quaternion.Euler(0f, head.eulerAngles.y, 0f);
@@ -675,6 +695,12 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
     /// </summary>
     private void SetupVoiceComponents()
     {
+        if (voiceRecorder == null || voiceSpeaker == null || voiceAudioSource == null)
+        {
+            ConsoleMessage.Send(debugMode, "Avatar - Voice components not found, skipping voice setup.", Color.yellow);
+            return;
+        }
+
         MUES_Networking net = MUES_Networking.Instance;
 
         bool isLocal = Object.HasInputAuthority;
@@ -791,9 +817,10 @@ public class MUES_AvatarMarker : MUES_AnchoredNetworkBehaviour
     /// </summary>
     private void ApplyMutedState()
     {
-        voiceAudioSource.mute = IsMuted || Object.HasInputAuthority;
+        if (voiceAudioSource != null)
+            voiceAudioSource.mute = IsMuted || Object.HasInputAuthority;
 
-        if (Object.HasInputAuthority)
+        if (Object.HasInputAuthority && voiceRecorder != null)
         {
             bool canTransmit = !IsMutedByHost && IsHmdMounted;
             voiceRecorder.TransmitEnabled = canTransmit;

@@ -250,8 +250,10 @@ public class MUES_RoomVisualizer : MonoBehaviour
 
         foreach (var table in currentTableTransforms)
         {
+            if (table.TryGetComponent<MRUKAnchor>(out var anchor))
+                anchor.enabled = false;
+
             table.SetParent(net.sceneParent, true);
-            table.GetComponent<MRUKAnchor>().enabled = false;
             table.localScale = Vector3.zero;
         }
 
@@ -266,14 +268,17 @@ public class MUES_RoomVisualizer : MonoBehaviour
 
         floor = floorTransform.GetChild(0).gameObject;
         floor.transform.GetComponent<Renderer>().enabled = false;
+
+        if (floorTransform.TryGetComponent<MRUKAnchor>(out var floorAnchor))
+            floorAnchor.enabled = false;
+
         floor.transform.parent.SetParent(net.sceneParent, true);
-        floor.transform.parent.GetComponent<MRUKAnchor>().enabled = false;
 
         var rb = floor.AddComponent<Rigidbody>();
         rb.isKinematic = true;
         rb.useGravity = false;
 
-        floor.layer = floorLayer;
+        floor.layer = LayerMask.NameToLayer("MUES_Floor");
 
         Destroy(room.gameObject);
         yield return SwitchToChairPlacement(true);

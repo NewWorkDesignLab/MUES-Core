@@ -10,7 +10,7 @@ GameObject:
   m_Component:
   - component: {fileID: 2702897438672028449}
   - component: {fileID: 8556975745353636632}
-  - component: {fileID: 5959233316792204864}
+  - component: {fileID: 6566433108082974095}
   - component: {fileID: 3852230879525603453}
   m_Layer: 0
   m_Name: Networking Controls
@@ -65,7 +65,7 @@ MonoBehaviour:
   isConnected: 0
   isJoiningAsClient: 0
   heightCalibrationOffset: 0
---- !u!114 &5959233316792204864
+--- !u!114 &6566433108082974095
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -91,7 +91,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::HSXR_ModelInstantiator
   loadedModelContainer: {fileID: 8157172237301098672, guid: 43745fd7750eeb24988086ad7df7036c, type: 3}
-  testModelPrefab: {fileID: 5485392940694735803, guid: e1d176c5eecf7d54da1f7aa6972837c0, type: 3}
   debugMode: 1
 --- !u!1 &1960051199189911029
 GameObject:
