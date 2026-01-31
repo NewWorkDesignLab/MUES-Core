@@ -55,6 +55,8 @@ public class MUES_UI : MonoBehaviour
 
     private TextMeshProUGUI adviceText; // Text for advice container
 
+    private Camera mainCam => Camera.main;  // Reference to the main camera
+
     void Start()
     {
         disconnectButton = transform.GetChild(0).GetChild(0).GetComponentInChildren<Button>();
@@ -201,12 +203,12 @@ public class MUES_UI : MonoBehaviour
     /// </summary>
     public void ManageDisplayPosition(Transform displayTransform)
     {
-        if (Camera.main == null)
+        if (mainCam == null)
             return;
 
-        Vector3 forwardProjected = Vector3.ProjectOnPlane(Camera.main.transform.forward, Vector3.up).normalized;
-        Vector3 targetPosition = Camera.main.transform.position + forwardProjected * 2f;
-        targetPosition.y = Camera.main.transform.position.y - 5f;
+        Vector3 forwardProjected = Vector3.ProjectOnPlane(mainCam.transform.forward, Vector3.up).normalized;
+        Vector3 targetPosition = mainCam.transform.position + forwardProjected * 2f;
+        targetPosition.y = mainCam.transform.position.y - 5f;
 
         displayTransform.position = Vector3.Lerp(displayTransform.position, targetPosition, Time.deltaTime * .5f);
     }
@@ -405,8 +407,8 @@ public class MUES_UI : MonoBehaviour
     /// </summary>
     private (Vector3 position, Quaternion rotation) GetSpawnPoseInFrontOfCamera(float distance)
     {
-        Vector3 camPos = Camera.main.transform.position;
-        Vector3 flatForward = Vector3.ProjectOnPlane(Camera.main.transform.forward, Vector3.up).normalized;
+        Vector3 camPos = mainCam.transform.position;
+        Vector3 flatForward = Vector3.ProjectOnPlane(mainCam.transform.forward, Vector3.up).normalized;
 
         if (flatForward.sqrMagnitude < 0.001f)
             flatForward = Vector3.forward;
