@@ -97,6 +97,11 @@ namespace MUES.Core
         /// </summary>
         public event Action<bool> OnRoomGeometryRenderChanged;
 
+        /// <summary>
+        /// Fired when the remote client has completed teleporting to a chair (or room center fallback).
+        /// </summary>
+        public event Action OnTeleportCompleted;
+
         #endregion
         private void Awake()
         {
@@ -571,6 +576,7 @@ namespace MUES.Core
             if (net == null || !net.isRemote)
             {
                 ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] TeleportToFirstFreeChair skipped - not a remote client.", Color.yellow);
+                OnTeleportCompleted?.Invoke();
                 yield break;
             }
 
@@ -595,6 +601,7 @@ namespace MUES.Core
             if (chairsInScene.Count == 0)
             {
                 ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] No chairs in scene to teleport to.", Color.yellow);
+                OnTeleportCompleted?.Invoke();
                 yield break;
             }
 
@@ -635,6 +642,8 @@ namespace MUES.Core
             }
             else
                 ovrManager.transform.SetPositionAndRotation(targetPosition, ovrManager.transform.rotation);
+
+            OnTeleportCompleted?.Invoke();
         }
 
         #endregion
@@ -722,8 +731,7 @@ namespace MUES.Core
                 if (anchor != null) anchor.localScale = Vector3.zero;
 
             sceneShown = false;
-            ToggleVisualization();
-
+            
             StartCoroutine(TeleportToFirstFreeChair());
         }
 

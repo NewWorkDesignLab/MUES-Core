@@ -566,7 +566,7 @@ GameObject:
   - component: {fileID: 8256494709351633510}
   - component: {fileID: 8331595491571539035}
   m_Layer: 0
-  m_Name: MUES_UI
+  m_Name: 'MUES_UI [WIP]'
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0

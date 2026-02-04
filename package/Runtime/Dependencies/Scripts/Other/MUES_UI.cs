@@ -60,6 +60,8 @@ namespace MUES.Core
 
         void Start()
         {
+            currentContainer = containerMain;
+
             disconnectButton = transform.GetChild(0).GetChild(0).GetComponentInChildren<Button>();
             disconnectButton.onClick.AddListener(() =>
             {

@@ -839,7 +839,27 @@ namespace MUES.Core
             }
 
             yield return SpawnAvatarMarker(player);
-            yield return new WaitForSeconds(5f);
+
+            if (isRemote)
+            {
+                bool teleportCompleted = false;
+                Action onTeleportDone = () => teleportCompleted = true;
+                MUES_RoomVisualizer.Instance.OnTeleportCompleted += onTeleportDone;
+
+                float teleportTimeout = 10f;
+                float teleportElapsed = 0f;
+
+                while (!teleportCompleted && teleportElapsed < teleportTimeout)
+                {
+                    teleportElapsed += Time.deltaTime;
+                    yield return null;
+                }
+
+                MUES_RoomVisualizer.Instance.OnTeleportCompleted -= onTeleportDone;
+
+                if (!teleportCompleted)
+                    ConsoleMessage.Send(debugMode, "Teleport timeout reached, continuing anyway.", Color.yellow);
+            }
 
             MUES_RoomVisualizer.Instance.HideSceneWhileLoading(false);
             isConnected = true;
