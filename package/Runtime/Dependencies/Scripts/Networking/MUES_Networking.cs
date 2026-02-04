@@ -57,7 +57,6 @@ namespace MUES.Core
         [HideInInspector] public SharedSpatialAnchorCore spatialAnchorCore; // Reference to the shared spatial anchor core component.
         [HideInInspector] public Transform anchorTransform, sceneParent; // Parent transform for instantiated scene objects.
         [HideInInspector] public bool isRemote, isConnected, isJoiningAsClient;  // Networking state flags.
-        [HideInInspector] public float heightCalibrationOffset = 0f; // Y-offset calculated from local floor vs host floor
         [HideInInspector] public PlayerRef _previousMasterClient = PlayerRef.None; // Previous master client reference.
 
         private Vector3 _sceneVelocity; // Velocity for scene smoothing.
@@ -1453,7 +1452,6 @@ namespace MUES.Core
             anchorGroupUuid = Guid.Empty;
             anchorTransform = sceneParent = null;
             activeRoom = null;
-            heightCalibrationOffset = 0f;
 
             isConnected = isCreatingRoom = isJoiningAsClient = false;
             isRemote = false;
