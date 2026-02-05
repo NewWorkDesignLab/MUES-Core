@@ -81,124 +81,75 @@ namespace MUES.Core
 
         private void OnEnable()
         {
-            MUES_Networking.Instance.OnLobbyCreationStarted += () =>
-            {
-                SwitchToContainer(containerLoading);
-            };
+            MUES_Networking.OnLobbyCreationStarted += OnLobbyCreationStartedHandler;
+            MUES_Networking.OnRoomMeshLoadFailed += OnRoomMeshLoadFailedHandler;
+            MUES_Networking.OnRoomCreationFailed += OnRoomCreationFailedHandler;
+            MUES_Networking.OnRoomCreatedSuccessfully += OnRoomCreatedSuccessfullyHandler;
+            MUES_Networking.OnPlayerJoined += OnPlayerJoinedHandler;
+            MUES_Networking.OnPlayerLeft += OnPlayerLeftHandler;
+            MUES_Networking.OnBecameMasterClient += OnBecameMasterClientHandler;
+            MUES_Networking.OnRoomLeft += OnRoomLeftHandler;
 
-            MUES_Networking.Instance.OnRoomMeshLoadFailed += () =>
+            if (MUES_RoomVisualizer.Instance != null)
             {
-                SwitchToContainer(containerRescan);
-            };
-
-            MUES_Networking.Instance.OnRoomCreationFailed += () =>
-            {
-                SwitchToContainer(containerDisconnected);
-            };
-
-            MUES_Networking.Instance.OnRoomCreatedSuccessfully += (roomCode) =>
-            {
-                codeDisplayText.text = $"Lobby Code: {roomCode}";
-            };
-
-            MUES_Networking.Instance.OnPlayerJoined += (playerRef) =>
-            {
-                if (MUES_Networking.Instance.Runner != null && playerRef != MUES_Networking.Instance.Runner.LocalPlayer)
-                    AddPlayerToList(playerRef);
-
-                UpdateJoinContainerPermissions();
-                SwitchToContainer(containerJoined);
-            };
-
-            MUES_Networking.Instance.OnPlayerLeft += (playerRef) =>
-            {
-                RemovePlayerFromList(playerRef);
-            };
-
-            MUES_Networking.Instance.OnBecameMasterClient += () =>
-            {
-                UpdateJoinContainerPermissions();
-            };
-
-            MUES_Networking.Instance.OnRoomLeft += () =>
-            {
-                SwitchToContainer(containerDisconnected);
-            };
-
-            MUES_RoomVisualizer.Instance.OnChairPlacementStarted += () =>
-            {
-                adviceText.text = "Press the PRIMARY TRIGGER to place a chair.\nPress A to end the chair placement.";
-                SwitchToContainer(containerAdvice);
-            };
-
-            MUES_RoomVisualizer.Instance.OnChairPlacementEnded += () =>
-            {
-                SwitchToContainer(containerLoading);
-            };
+                MUES_RoomVisualizer.Instance.OnChairPlacementStarted += OnChairPlacementStartedHandler;
+                MUES_RoomVisualizer.Instance.OnChairPlacementEnded += OnChairPlacementEndedHandler;
+            }
         }
 
         private void OnDisable()
         {
-            MUES_Networking.Instance.OnLobbyCreationStarted -= () =>
-            {
-                SwitchToContainer(containerLoading);
-            };
+            MUES_Networking.OnLobbyCreationStarted -= OnLobbyCreationStartedHandler;
+            MUES_Networking.OnRoomMeshLoadFailed -= OnRoomMeshLoadFailedHandler;
+            MUES_Networking.OnRoomCreationFailed -= OnRoomCreationFailedHandler;
+            MUES_Networking.OnRoomCreatedSuccessfully -= OnRoomCreatedSuccessfullyHandler;
+            MUES_Networking.OnPlayerJoined -= OnPlayerJoinedHandler;
+            MUES_Networking.OnPlayerLeft -= OnPlayerLeftHandler;
+            MUES_Networking.OnBecameMasterClient -= OnBecameMasterClientHandler;
+            MUES_Networking.OnRoomLeft -= OnRoomLeftHandler;
 
-            MUES_Networking.Instance.OnRoomMeshLoadFailed -= () =>
+            if (MUES_RoomVisualizer.Instance != null)
             {
-                SwitchToContainer(containerRescan);
-            };
-
-            MUES_Networking.Instance.OnRoomCreationFailed -= () =>
-            {
-                SwitchToContainer(containerDisconnected);
-            };
-
-            MUES_Networking.Instance.OnRoomCreatedSuccessfully -= (roomCode) =>
-            {
-                codeDisplayText.text = $"Lobby Code: {roomCode}";
-            };
-
-            MUES_Networking.Instance.OnPlayerJoined -= (playerRef) =>
-            {
-                if (MUES_Networking.Instance.Runner != null && playerRef != MUES_Networking.Instance.Runner.LocalPlayer)
-                    AddPlayerToList(playerRef);
-
-                UpdateJoinContainerPermissions();
-                SwitchToContainer(containerJoined);
-            };
-
-            MUES_Networking.Instance.OnPlayerLeft -= (playerRef) =>
-            {
-                RemovePlayerFromList(playerRef);
-            };
-
-            MUES_Networking.Instance.OnBecameMasterClient -= () =>
-            {
-                UpdateJoinContainerPermissions();
-            };
-
-            MUES_Networking.Instance.OnRoomLeft -= () =>
-            {
-                SwitchToContainer(containerDisconnected);
-            };
-
-            MUES_RoomVisualizer.Instance.OnChairPlacementStarted -= () =>
-            {
-                adviceText.text = "Press the PRIMARY TRIGGER to place a chair.\nPress A to end the chair placement.";
-                SwitchToContainer(containerAdvice);
-            };
-
-            MUES_RoomVisualizer.Instance.OnChairPlacementEnded -= () =>
-            {
-                SwitchToContainer(containerLoading);
-            };
+                MUES_RoomVisualizer.Instance.OnChairPlacementStarted -= OnChairPlacementStartedHandler;
+                MUES_RoomVisualizer.Instance.OnChairPlacementEnded -= OnChairPlacementEndedHandler;
+            }
         }
+
+        #region Event Handlers
+
+        private void OnLobbyCreationStartedHandler() => SwitchToContainer(containerLoading);
+        private void OnRoomMeshLoadFailedHandler() => SwitchToContainer(containerRescan);
+        private void OnRoomCreationFailedHandler() => SwitchToContainer(containerDisconnected);
+        private void OnRoomCreatedSuccessfullyHandler(string roomCode) => codeDisplayText.text = $"Lobby Code: {roomCode}";
+
+        private void OnPlayerJoinedHandler(PlayerRef playerRef)
+        {
+            if (MUES_Networking.Instance?.Runner != null && playerRef != MUES_Networking.Instance.Runner.LocalPlayer)
+                AddPlayerToList(playerRef);
+
+            UpdateJoinContainerPermissions();
+            SwitchToContainer(containerJoined);
+        }
+
+        private void OnPlayerLeftHandler(PlayerRef playerRef) => RemovePlayerFromList(playerRef);
+        private void OnBecameMasterClientHandler() => UpdateJoinContainerPermissions();
+        private void OnRoomLeftHandler() => SwitchToContainer(containerDisconnected);
+
+        private void OnChairPlacementStartedHandler()
+        {
+            adviceText.text = "Press the PRIMARY TRIGGER to place a chair.\nPress A to end the chair placement.";
+            SwitchToContainer(containerAdvice);
+        }
+
+        private void OnChairPlacementEndedHandler() => SwitchToContainer(containerLoading);
+
+        #endregion
 
         void Update()
         {
             ManageDisplayPosition(transform);
-            disconnectButton.interactable = MUES_Networking.Instance.isConnected;
+            if (MUES_Networking.Instance != null)
+                disconnectButton.interactable = MUES_Networking.Instance.isConnected;
         }
 
         /// <summary>

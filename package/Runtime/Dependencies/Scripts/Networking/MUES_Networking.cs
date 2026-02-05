@@ -112,82 +112,82 @@ namespace MUES.Core
         /// <summary>
         /// Fired when lobby creation starts.
         /// </summary>
-        public event Action OnLobbyCreationStarted;
+        public static event Action OnLobbyCreationStarted;
 
         /// <summary>
         /// Fired when a room is successfully created. Provides the room token.
         /// </summary>
-        public event Action<string> OnRoomCreatedSuccessfully;
+        public static event Action<string> OnRoomCreatedSuccessfully;
 
         /// <summary>
-        /// Fired when room creation fails. Provides error message.
+        /// Fired when room creation fails.
         /// </summary>
-        public event Action OnRoomCreationFailed;
+        public static event Action OnRoomCreationFailed;
 
         /// <summary>
         /// Fired when room mesh loading fails (no scanned room data found).
         /// </summary>
-        public event Action OnRoomMeshLoadFailed;
+        public static event Action OnRoomMeshLoadFailed;
 
         /// <summary>
         /// Fired when joining is enabled for other players.
         /// </summary>
-        public event Action OnJoiningEnabled;
+        public static event Action OnJoiningEnabled;
 
         /// <summary>
         /// Fired when room joining fails.
         /// </summary>
-        public event Action OnRoomJoiningFailed;
+        public static event Action OnRoomJoiningFailed;
 
         /// <summary>
         /// Fired when the local player joins a room as host.
         /// </summary>
-        public event Action<PlayerRef> OnHostJoined;
+        public static event Action<PlayerRef> OnHostJoined;
 
         /// <summary>
         /// Fired when the local player joins a room as colocated client.
         /// </summary>
-        public event Action<PlayerRef> OnColocatedClientJoined;
+        public static event Action<PlayerRef> OnColocatedClientJoined;
 
         /// <summary>
         /// Fired when the local player joins a room as remote client.
         /// </summary>
-        public event Action<PlayerRef> OnRemoteClientJoined;
+        public static event Action<PlayerRef> OnRemoteClientJoined;
 
         /// <summary>
         /// Fired when a remote player joins. Provides PlayerRef.
         /// </summary>
-        public event Action<PlayerRef> OnPlayerJoined;
+        public static event Action<PlayerRef> OnPlayerJoined;
 
         /// <summary>
         /// Fired when a player leaves. Provides PlayerRef.
         /// </summary>
-        public event Action<PlayerRef> OnPlayerLeft;
+        public static event Action<PlayerRef> OnPlayerLeft;
 
         /// <summary>
         /// Fired when the local player leaves the room.
         /// </summary>
-        public event Action OnRoomLeft;
+        public static event Action OnRoomLeft;
 
         /// <summary>
         /// Fired when connection state changes. Provides isConnected.
         /// </summary>
-        public event Action<bool> OnConnectionStateChanged;
+        public static event Action<bool> OnConnectionStateChanged;
 
         /// <summary>
         /// Fired when remote status changes. Provides isRemote.
         /// </summary>
-        public event Action<bool> OnRemoteStatusChanged;
+        public static event Action<bool> OnRemoteStatusChanged;
 
         /// <summary>
         /// Fired when this client becomes the new master client.
         /// </summary>
-        public event Action OnBecameMasterClient;
+        public static event Action OnBecameMasterClient;
 
         /// <summary>
         /// Fired when QR code scanning state changes. Provides the new scanning state.
         /// </summary>
-        public event Action<bool> OnQRCodeScanningStateChanged;
+        public static event Action<bool> OnQRCodeScanningStateChanged;
 
         /// <summary>
         /// Invokes the OnPlayerJoined event for the specified player.
