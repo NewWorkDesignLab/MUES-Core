@@ -165,6 +165,7 @@ namespace MUES.Core
                 PlayerRef = playerRef,
                 PlayerName = playerName,
             });
+
             ConsoleMessage.Send(true, $"[SessionMeta] Player registered: {playerName} (Ref: {playerRef})", Color.green);
         }
 

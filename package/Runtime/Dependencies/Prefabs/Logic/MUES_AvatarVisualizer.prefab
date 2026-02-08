@@ -1193,10 +1193,13 @@ MonoBehaviour:
     _value: 0
   _HeadLocalPos: {x: 0, y: 0, z: 0}
   _HeadLocalRot: {x: 0, y: 0, z: 0, w: 0}
+  _HeadAnchorRelativePos: {x: 0, y: 0, z: 0}
   _RightHandLocalPos: {x: 0, y: 0, z: 0}
   _LeftHandLocalPos: {x: 0, y: 0, z: 0}
   _RightHandLocalRot: {x: 0, y: 0, z: 0, w: 0}
   _LeftHandLocalRot: {x: 0, y: 0, z: 0, w: 0}
+  _RightHandAnchorRelativePos: {x: 0, y: 0, z: 0}
+  _LeftHandAnchorRelativePos: {x: 0, y: 0, z: 0}
   _RightHandVisible:
     _value: 0
   _LeftHandVisible:
@@ -1209,6 +1212,7 @@ MonoBehaviour:
     _value: 0
   _AfkMarkerLocalPos: {x: 0, y: 0, z: 0}
   _AfkMarkerLocalRot: {x: 0, y: 0, z: 0, w: 0}
+  _TrackingSpaceYOffset: 0
   voiceAudioSource: {fileID: 0}
 --- !u!114 &1942343534745959403
 MonoBehaviour:
@@ -1365,6 +1369,7 @@ GameObject:
   - component: {fileID: 7373214589262756723}
   - component: {fileID: 5424073634793439036}
   - component: {fileID: 7787736615013681058}
+  - component: {fileID: 1426539466388182555}
   m_Layer: 0
   m_Name: Head
   m_TagString: Untagged
@@ -1559,3 +1564,18 @@ AudioSource:
     m_PreInfinity: 2
     m_PostInfinity: 2
     m_RotationOrder: 4
+--- !u!114 &1426539466388182555
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 8762176565123977990}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b7f95aa3c06eaa84bba4eafdedf12758, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: PhotonVoice::Photon.Voice.Unity.AudioChangesHandler
+  HandleDeviceChange: 1
+  HandleDeviceChangeIOS: 0
+  HandleDeviceChangeAndroid: 1

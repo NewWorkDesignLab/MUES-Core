@@ -3,8 +3,10 @@ using Meta.XR.MultiplayerBlocks.Fusion;
 using Meta.XR.MultiplayerBlocks.Shared;
 using Oculus.Interaction;
 using Oculus.Interaction.HandGrab;
+using System;
 using System.Threading.Tasks;
 using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -30,35 +32,34 @@ namespace MUES.Core
         [HideInInspector][Networked] public int SpawnerPlayerId { get; set; } = -1; // PlayerId of the spawner
         [HideInInspector][Networked] public NetworkString<_64> ModelFileName { get; set; }  // Filename of the model to load
 
+        [HideInInspector] public bool _isBeingGrabbed = false;   // Flag indicating if the object is currently being grabbed
+
+        /// <summary>
+        /// Event fired when the object has been fully initialized and is ready for interaction.
+        /// </summary>
+        public event Action OnInitialized;
+
         private Grabbable _grabbable;   // Reference to the Grabbable component
         private GrabInteractable _grabInteractable; // Reference to the GrabInteractable component
         private HandGrabInteractable _handGrabInteractable; // Reference to the HandGrabInteractable component
-        private TransferOwnershipFusion ownershipTransfer;  // Reference to the TransferOwnershipFusion component
+        private TransferOwnershipFusion _ownershipTransfer;  // Reference to the TransferOwnershipFusion component
 
-        private bool modelLoaded = false;   // Flag indicating if the model has been loaded
+        private bool _modelLoaded = false;   // Flag indicating if the model has been loaded
         private bool _isGrabbableOnSpawn = false;   // Cache of initial grabbable state
         private int _lastKnownSpawnerPlayerId = -1; // Cache of last known spawner player ID
         private bool _lastKnownSpawnerControlsTransform = false;    // Cache of last known spawner controls transform state
 
         private Vector3 _lastLocalPosition; // Cache of last local position relative to reference transform
         private Quaternion _lastLocalRotation;  // Cache of last local rotation relative to reference transform
-        private bool _isBeingGrabbed = false;   // Flag indicating if the object is currently being grabbed
-        private float movementThreshold = 0.001f;   // Threshold for position change detection
-        private float rotationThreshold = 0.1f; // Threshold for rotation change detection
+        private readonly float _movementThreshold = 0.001f;   // Threshold for position change detection
+        private readonly float _rotationThreshold = 0.1f; // Threshold for rotation change detection
 
         private Vector3 _cachedScale = Vector3.one; // Cached original scale for visibility control
 
         /// <summary>
         /// Gets the reference transform for movement detection.
         /// </summary>
-        private Transform ReferenceTransform
-        {
-            get
-            {
-                var net = MUES_Networking.Instance;
-                return (net == null || net.isRemote) ? null : net.sceneParent;
-            }
-        }
+        private Transform ReferenceTransform => (Net == null || Net.isRemote) ? null : Net.sceneParent;
 
         /// <summary>
         /// Checks if the current client has authority over this object.
@@ -67,13 +68,15 @@ namespace MUES.Core
         {
             get
             {
-                try
-                {
-                    return Object != null && Object.IsValid && (Object.HasInputAuthority || Object.HasStateAuthority);
-                }
+                try { return Object != null && Object.IsValid && (Object.HasInputAuthority || Object.HasStateAuthority); }
                 catch { return false; }
             }
         }
+
+        /// <summary>
+        /// Checks if the networked object is valid and accessible.
+        /// </summary>
+        private bool IsObjectValid => Object != null && Object.IsValid;
 
         /// <summary>
         /// Checks if the spawner is still connected to the session.
@@ -88,9 +91,7 @@ namespace MUES.Core
             get
             {
                 if (!SpawnerControlsTransform || Runner == null) return true;
-
-                int localPlayerId = Runner.LocalPlayer.PlayerId;
-                if (SpawnerPlayerId == localPlayerId) return true;
+                if (SpawnerPlayerId == Runner.LocalPlayer.PlayerId) return true;
 
                 try
                 {
@@ -101,12 +102,13 @@ namespace MUES.Core
                     ConsoleMessage.Send(true, "Networked Transform - Error checking Input Authority", Color.yellow);
                 }
 
-                if (Runner.IsSharedModeMasterClient && !IsSpawnerConnected) return true;
-
-                return false;
+                return Runner.IsSharedModeMasterClient && !IsSpawnerConnected;
             }
         }
 
+        /// <summary>
+        /// Gets called when the object is spawned in the network.
+        /// </summary>
         public override void Spawned()
         {
             _cachedScale = transform.localScale;
@@ -116,19 +118,26 @@ namespace MUES.Core
             _lastKnownSpawnerPlayerId = SpawnerPlayerId;
             _lastKnownSpawnerControlsTransform = SpawnerControlsTransform;
 
-            if (Object.HasStateAuthority && SpawnerPlayerId == -1)
-            {
-                SpawnerPlayerId = (Object.InputAuthority == PlayerRef.None || Object.InputAuthority.PlayerId < 0)
-                    ? Runner.LocalPlayer.PlayerId
-                    : Object.InputAuthority.PlayerId;
-
-                ConsoleMessage.Send(true, $"Networked Transform - SpawnerPlayerId set to: {SpawnerPlayerId}", Color.cyan);
-            }
+            InitializeSpawnerPlayerId();
 
             ConsoleMessage.Send(true, $"Networked Transform - Spawned: IsGrabbable={IsGrabbable}, SpawnerControlsTransform={SpawnerControlsTransform}, SpawnerPlayerId={SpawnerPlayerId}, InputAuth={Object.InputAuthority}, LocalPlayer={Runner?.LocalPlayer}, LocalPlayerId={Runner?.LocalPlayer.PlayerId}", Color.magenta);
 
             DisableExistingGrabbableComponents();
             StartCoroutine(InitRoutine());
+        }
+
+        /// <summary>
+        /// Initializes the SpawnerPlayerId if this client has state authority and it hasn't been set.
+        /// </summary>
+        private void InitializeSpawnerPlayerId()
+        {
+            if (!Object.HasStateAuthority || SpawnerPlayerId != -1) return;
+
+            SpawnerPlayerId = (Object.InputAuthority == PlayerRef.None || Object.InputAuthority.PlayerId < 0)
+                ? Runner.LocalPlayer.PlayerId
+                : Object.InputAuthority.PlayerId;
+
+            ConsoleMessage.Send(true, $"Networked Transform - SpawnerPlayerId set to: {SpawnerPlayerId}", Color.cyan);
         }
 
         /// <summary>
@@ -145,15 +154,11 @@ namespace MUES.Core
         /// <summary>
         /// Gets the anchor and initializes the object's position and rotation based on networked data.
         /// </summary>
-        IEnumerator InitRoutine()
+        private IEnumerator InitRoutine()
         {
             yield return null;
 
-            if (HasAuthority && !SpawnerControlsTransform && spawnerOnlyGrab)
-            {
-                SpawnerControlsTransform = true;
-                ConsoleMessage.Send(true, $"Networked Transform - Applied inspector spawnerOnlyGrab={spawnerOnlyGrab} to network", Color.cyan);
-            }
+            ApplySpawnerOnlyGrabSetting();
 
             transform.GetPositionAndRotation(out Vector3 spawnWorldPos, out Quaternion spawnWorldRot);
             bool hadValidSpawnPos = spawnWorldPos != Vector3.zero;
@@ -162,68 +167,90 @@ namespace MUES.Core
 
             yield return InitAnchorRoutine();
 
-            while (MUES_SessionMeta.Instance == null)
-            {
-                ConsoleMessage.Send(true, "Networked Transform - Waiting for session meta...", Color.yellow);
-                yield return null;
-            }
+            yield return WaitForCondition(
+                () => MUES_SessionMeta.Instance != null,
+                DefaultTimeout,
+                () => ConsoleMessage.Send(true, "Networked Transform - Waiting for session meta...", Color.yellow)
+            );
 
-            ownershipTransfer = GetComponent<TransferOwnershipFusion>();
+            _ownershipTransfer = GetComponent<TransferOwnershipFusion>();
 
             bool isSpawner = Object.HasInputAuthority || (Runner.GameMode == GameMode.Shared && Object.HasStateAuthority);
 
-            if (isSpawner)
-            {
-                yield return null;
-
-                if (hadValidSpawnPos)
-                {
-                    transform.SetPositionAndRotation(spawnWorldPos, spawnWorldRot);
-                    ConsoleMessage.Send(true, $"Networked Transform - Restored spawn position after parenting: {spawnWorldPos}", Color.cyan);
-                }
-
-                if (transform.position == Vector3.zero)
-                    ConsoleMessage.Send(true, "Networked Transform - WARNING: Position is still at origin after restore!", Color.red);
-
-                WorldToAnchor();
-                ConsoleMessage.Send(true, $"Networked Transform - WorldToAnchor set: Pos={transform.position}, Offset={LocalAnchorOffset}, RotOffset={LocalAnchorRotationOffset.eulerAngles}", Color.cyan);
-            }
-            else
-            {
-                float timeout = 5f;
-                float elapsed = 0f;
-
-                while (LocalAnchorOffset == Vector3.zero &&
-                       LocalAnchorRotationOffset == Quaternion.identity &&
-                       elapsed < timeout)
-                {
-                    elapsed += Time.deltaTime;
-                    yield return null;
-                }
-
-                if (elapsed >= timeout)
-                    ConsoleMessage.Send(true, $"Networked Transform - Timeout waiting for anchor offset!", Color.yellow);
-                else
-                    ConsoleMessage.Send(true, $"Networked Transform - Received anchor offset: {LocalAnchorOffset}, rot: {LocalAnchorRotationOffset.eulerAngles}", Color.cyan);
-
-                if (anchorReady && anchor != null)
-                {
-                    AnchorToWorld();
-                    ConsoleMessage.Send(true, $"Networked Transform - AnchorToWorld applied: NewPos={transform.position}, NewRot={transform.rotation.eulerAngles}", Color.cyan);
-                }
-                else
-                    ConsoleMessage.Send(true, "Networked Transform - Anchor not ready for AnchorToWorld!", Color.red);
-            }
+            if (isSpawner) yield return InitAsSpawner(spawnWorldPos, spawnWorldRot, hadValidSpawnPos);
+            else yield return InitAsNonSpawner();
 
             yield return LoadModelIfNeeded();
             UpdateGrabbableState();
 
             CacheCurrentPosition();
             initialized = true;
-
             transform.localScale = _cachedScale;
 
             ConsoleMessage.Send(true, $"Networked Transform - Init complete. Final Pos={transform.position}, Rot={transform.rotation.eulerAngles}, Scale restored to {_cachedScale}", Color.green);
+
+            OnInitialized?.Invoke();
+        }
+
+        /// <summary>
+        /// Applies the spawnerOnlyGrab inspector setting to the network if applicable.
+        /// </summary>
+        private void ApplySpawnerOnlyGrabSetting()
+        {
+            if (!HasAuthority || SpawnerControlsTransform || !spawnerOnlyGrab) return;
+
+            SpawnerControlsTransform = true;
+            ConsoleMessage.Send(true, $"Networked Transform - Applied inspector spawnerOnlyGrab={spawnerOnlyGrab} to network", Color.cyan);
+        }
+
+        /// <summary>
+        /// Initializes the object as the spawner, restoring position and setting anchor offsets.
+        /// </summary>
+        private IEnumerator InitAsSpawner(Vector3 spawnWorldPos, Quaternion spawnWorldRot, bool hadValidSpawnPos)
+        {
+            yield return null;
+
+            if (hadValidSpawnPos)
+            {
+                transform.SetPositionAndRotation(spawnWorldPos, spawnWorldRot);
+                ConsoleMessage.Send(true, $"Networked Transform - Restored spawn position after parenting: {spawnWorldPos}", Color.cyan);
+            }
+
+            if (transform.position == Vector3.zero)
+                ConsoleMessage.Send(true, "Networked Transform - WARNING: Position is still at origin after restore!", Color.red);
+
+            WorldToAnchor();
+            ConsoleMessage.Send(true, $"Networked Transform - WorldToAnchor set: Pos={transform.position}, Offset={LocalAnchorOffset}, RotOffset={LocalAnchorRotationOffset.eulerAngles}", Color.cyan);
+        }
+
+        /// <summary>
+        /// Initializes the object as a non-spawner, waiting for anchor offsets from the network.
+        /// </summary>
+        private IEnumerator InitAsNonSpawner()
+        {
+            bool receivedOffset = false;
+
+            yield return WaitForCondition(
+                () =>
+                {
+                    receivedOffset = LocalAnchorOffset != Vector3.zero || LocalAnchorRotationOffset != Quaternion.identity;
+                    return receivedOffset;
+                },
+                DefaultTimeout
+            );
+
+            if (!receivedOffset)
+                ConsoleMessage.Send(true, "Networked Transform - Timeout waiting for anchor offset!", Color.yellow);
+            else
+                ConsoleMessage.Send(true, $"Networked Transform - Received anchor offset: {LocalAnchorOffset}, rot: {LocalAnchorRotationOffset.eulerAngles}", Color.cyan);
+
+            if (anchorReady && anchor != null)
+            {
+                AnchorToWorld();
+                ConsoleMessage.Send(true, $"Networked Transform - AnchorToWorld applied: NewPos={transform.position}, NewRot={transform.rotation.eulerAngles}", Color.cyan);
+            }
+            else
+                ConsoleMessage.Send(true, "Networked Transform - Anchor not ready for AnchorToWorld!", Color.red);
         }
 
         /// <summary>
@@ -266,8 +293,8 @@ namespace MUES.Core
                 currentRot = transform.rotation;
             }
 
-            bool hasMoved = Vector3.Distance(_lastLocalPosition, currentPos) > movementThreshold ||
-                            Quaternion.Angle(_lastLocalRotation, currentRot) > rotationThreshold;
+            bool hasMoved = Vector3.Distance(_lastLocalPosition, currentPos) > _movementThreshold ||
+                            Quaternion.Angle(_lastLocalRotation, currentRot) > _rotationThreshold;
 
             if (hasMoved)
             {
@@ -279,7 +306,7 @@ namespace MUES.Core
         }
 
         /// <summary>
-        /// Gets executed at fixed network intervals to update the networked anchor offsets.
+        /// Gets called on each network tick to update the object's position if necessary.
         /// </summary>
         public override void FixedUpdateNetwork()
         {
@@ -290,16 +317,23 @@ namespace MUES.Core
         }
 
         /// <summary>
-        /// Called every frame to update the visual representation for non-authority clients.
+        /// Gets called every frame to update the object's position based on authority and networked properties.
         /// </summary>
         public override void Render()
         {
             if (!initialized || !anchorReady) return;
 
-            bool hasAuth = HasAuthority;
-            if (!hasAuth)
+            if (!HasAuthority)
                 AnchorToWorld();
 
+            CheckForNetworkPropertyChanges();
+        }
+
+        /// <summary>
+        /// Checks for changes in networked properties and updates grabbable state accordingly.
+        /// </summary>
+        private void CheckForNetworkPropertyChanges()
+        {
             if (_lastKnownSpawnerPlayerId != SpawnerPlayerId)
             {
                 ConsoleMessage.Send(true, $"Networked Transform - SpawnerPlayerId changed from {_lastKnownSpawnerPlayerId} to {SpawnerPlayerId} on {gameObject.name}", Color.cyan);
@@ -314,12 +348,8 @@ namespace MUES.Core
                 UpdateGrabbableState();
             }
 
-            if (Time.frameCount % 60 == 0 && _grabbable != null)
-            {
-                bool shouldBeEnabled = IsLocalPlayerAllowedToControl;
-                if (_grabbable.enabled != shouldBeEnabled)
-                    UpdateGrabbableState();
-            }
+            if (Time.frameCount % 60 == 0 && _grabbable != null && _grabbable.enabled != IsLocalPlayerAllowedToControl)
+                UpdateGrabbableState();
         }
 
         #region Model Loading
@@ -329,20 +359,12 @@ namespace MUES.Core
         /// </summary>
         private IEnumerator LoadModelIfNeeded()
         {
-            float timeout = 10f;
-            float elapsed = 0f;
+            yield return WaitForCondition(
+                () => !IsObjectValid || !string.IsNullOrEmpty(ModelFileName.ToString()),
+                DefaultTimeout
+            );
 
-            while (elapsed < timeout)
-            {
-                if (Object == null || !Object.IsValid) yield break;
-
-                if (!string.IsNullOrEmpty(ModelFileName.ToString())) break;
-
-                elapsed += Time.deltaTime;
-                yield return null;
-            }
-
-            if (Object == null || !Object.IsValid) yield break;
+            if (!IsObjectValid) yield break;
 
             string modelName = ModelFileName.ToString();
 
@@ -352,7 +374,7 @@ namespace MUES.Core
                 yield break;
             }
 
-            if (modelLoaded || transform.childCount > 0)
+            if (_modelLoaded || transform.childCount > 0)
             {
                 ConsoleMessage.Send(true, "Networked Transform - Model already loaded.", Color.yellow);
                 yield break;
@@ -368,8 +390,7 @@ namespace MUES.Core
             }
 
             var fetchTask = objectManager.FetchModelFromServer(modelName);
-            while (!fetchTask.IsCompleted)
-                yield return null;
+            yield return new WaitUntil(() => fetchTask.IsCompleted);
 
             string localPath = fetchTask.Result;
             if (string.IsNullOrEmpty(localPath))
@@ -379,35 +400,38 @@ namespace MUES.Core
             }
 
             var loadTask = LoadModelLocally(localPath);
-            while (!loadTask.IsCompleted)
-                yield return null;
+            yield return new WaitUntil(() => loadTask.IsCompleted);
 
-            modelLoaded = true;
+            _modelLoaded = true;
 
             if (_isGrabbableOnSpawn)
+                yield return FinalizeGrabbableModel();
+
+            ConsoleMessage.Send(true, "Networked Transform - Object is now ready for interaction", Color.green);
+        }
+
+        /// <summary>
+        /// Finalizes the grabbable model by initializing components and updating state.
+        /// </summary>
+        private IEnumerator FinalizeGrabbableModel()
+        {
+            InitGrabbableComponents();
+            yield return null;
+
+            if (!IsObjectValid) yield break;
+
+            UpdateGrabbableState();
+
+            bool isAllowed = false;
+            try { isAllowed = IsLocalPlayerAllowedToControl; } catch { }
+
+            ConsoleMessage.Send(true, $"Networked Transform - Model loaded and grabbable initialized. IsAllowed={isAllowed}", Color.green);
+
+            if (anchorReady)
             {
-                InitGrabbableComponents();
-
-                yield return null;
-
-                if (Object == null || !Object.IsValid) yield break;
-
-                UpdateGrabbableState();
-
-                bool isAllowed = false;
-                try { isAllowed = IsLocalPlayerAllowedToControl; } catch { }
-
-                ConsoleMessage.Send(true, $"Networked Transform - Model loaded and grabbable initialized. IsAllowed={isAllowed}", Color.green);
-
-                if (anchorReady)
-                {
-                    if (HasAuthority) WorldToAnchor();
-                    else AnchorToWorld();
-                }
+                if (HasAuthority) WorldToAnchor();
+                else AnchorToWorld();
             }
-
-            // Remove SetVisibility call - scale is handled in InitRoutine
-            ConsoleMessage.Send(true, $"Networked Transform - Object is now ready for interaction", Color.green);
         }
 
         /// <summary>
@@ -421,67 +445,107 @@ namespace MUES.Core
 
             try
             {
-                IMaterialGenerator materialGenerator = CreateMaterialGenerator();
-                var gltfImport = new GltfImport(materialGenerator: materialGenerator);
-
-                var settings = new ImportSettings
-                {
-                    GenerateMipMaps = true,
-                    AnisotropicFilterLevel = 3,
-                    NodeNameMethod = NameImportMethod.OriginalUnique
-                };
-
-                bool success = false;
-                try
-                {
-                    success = await gltfImport.Load($"file://{path}", settings);
-                }
-                catch (System.Exception ex)
-                {
-                    ConsoleMessage.Send(true, $"Networked Transform - Exception checking GLB: {ex.Message}", Color.red);
-                }
-
-                if (!success)
-                {
-                    ConsoleMessage.Send(true, $"Networked Transform - Failed to load GLB: {path}. Deleting potential corrupt file.", Color.red);
-                    try
-                    {
-                        if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
-                    }
-                    catch { }
-                    return;
-                }
-
-                ConsoleMessage.Send(true, "Networked Transform - Starting GLTF Instantiation...", Color.cyan);
-                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-                var wrapper = new GameObject("GLTF_Wrapper");
-                wrapper.transform.SetParent(transform, false);
-                wrapper.transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
-
-                bool instantiateSuccess = await gltfImport.InstantiateMainSceneAsync(wrapper.transform);
-
-                stopwatch.Stop();
-                ConsoleMessage.Send(true, $"Networked Transform - GLTF Instantation took {stopwatch.ElapsedMilliseconds}ms.", Color.cyan);
-
-                if (!instantiateSuccess)
-                {
-                    ConsoleMessage.Send(true, $"Networked Transform - Failed to instantiate GLB: {path}", Color.red);
-                    return;
-                }
-
-                SetLayerRecursively(wrapper.transform, LayerMask.NameToLayer("Default"));
-                DisableEnvironmentDepthOcclusionForModel(wrapper.transform);
-
-                ConsoleMessage.Send(true, "Networked Transform - Starting Collider Generation...", Color.cyan);
-                await AddMeshCollidersAsync(wrapper.transform);
-
-                ConsoleMessage.Send(true, $"Networked Transform - Model loaded successfully: {path}", Color.green);
+                await LoadAndInstantiateGltf(path);
             }
             finally
             {
                 objectManager?.ReleaseInstantiationPermit();
             }
+        }
+
+        /// <summary>
+        /// Loads and instantiates a GLTF model from the specified path.
+        /// </summary>
+        private async Task LoadAndInstantiateGltf(string path)
+        {
+            var gltfImport = new GltfImport(materialGenerator: CreateMaterialGenerator());
+
+            var settings = new ImportSettings
+            {
+                GenerateMipMaps = true,
+                AnisotropicFilterLevel = 3,
+                NodeNameMethod = NameImportMethod.OriginalUnique
+            };
+
+            if (!await TryLoadGltf(gltfImport, path, settings)) return;
+
+            ConsoleMessage.Send(true, "Networked Transform - Starting GLTF Instantiation...", Color.cyan);
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            var wrapper = CreateGltfWrapper();
+            bool instantiateSuccess = await gltfImport.InstantiateMainSceneAsync(wrapper.transform);
+
+            stopwatch.Stop();
+            ConsoleMessage.Send(true, $"Networked Transform - GLTF Instantiation took {stopwatch.ElapsedMilliseconds}ms.", Color.cyan);
+
+            if (!instantiateSuccess)
+            {
+                ConsoleMessage.Send(true, $"Networked Transform - Failed to instantiate GLB: {path}", Color.red);
+                return;
+            }
+
+            PostProcessModel(wrapper.transform);
+
+            ConsoleMessage.Send(true, "Networked Transform - Starting Collider Generation...", Color.cyan);
+            await AddMeshCollidersAsync(wrapper.transform);
+
+            ConsoleMessage.Send(true, $"Networked Transform - Model loaded successfully: {path}", Color.green);
+        }
+
+        /// <summary>
+        /// Attempts to load a GLTF file, handling errors and cleaning up corrupt files.
+        /// </summary>
+        private async Task<bool> TryLoadGltf(GltfImport gltfImport, string path, ImportSettings settings)
+        {
+            bool success = false;
+            try
+            {
+                success = await gltfImport.Load($"file://{path}", settings);
+            }
+            catch (Exception ex)
+            {
+                ConsoleMessage.Send(true, $"Networked Transform - Exception checking GLB: {ex.Message}", Color.red);
+            }
+
+            if (!success)
+            {
+                ConsoleMessage.Send(true, $"Networked Transform - Failed to load GLB: {path}. Deleting potential corrupt file.", Color.red);
+                TryDeleteFile(path);
+            }
+
+            return success;
+        }
+
+        /// <summary>
+        /// Attempts to delete a file, suppressing any errors.
+        /// </summary>
+        private void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Creates a wrapper GameObject for the GLTF model.
+        /// </summary>
+        private GameObject CreateGltfWrapper()
+        {
+            var wrapper = new GameObject("GLTF_Wrapper");
+            wrapper.transform.SetParent(transform, false);
+            wrapper.transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
+            return wrapper;
+        }
+
+        /// <summary>
+        /// Applies post-processing to the loaded model including layer setup and occlusion settings.
+        /// </summary>
+        private void PostProcessModel(Transform wrapper)
+        {
+            SetLayerRecursively(wrapper, LayerMask.NameToLayer("Default"));
+            DisableEnvironmentDepthOcclusionForModel(wrapper);
         }
 
         /// <summary>
@@ -500,29 +564,34 @@ namespace MUES.Core
         private void DisableEnvironmentDepthOcclusionForModel(Transform root)
         {
             var renderers = root.GetComponentsInChildren<Renderer>(true);
-            
+
             foreach (var renderer in renderers)
             {
                 if (renderer == null) continue;
-                
+
                 foreach (var material in renderer.materials)
-                {
-                    if (material == null) continue;
-
-                    if (material.HasProperty("_EnvironmentDepthBias"))
-                        material.SetFloat("_EnvironmentDepthBias", 1.0f);
-
-                    if (material.HasProperty("_EnableOcclusionHardDepthSensitivity"))
-                        material.SetFloat("_EnableOcclusionHardDepthSensitivity", 0f);
-
-                    material.DisableKeyword("HARD_OCCLUSION");
-                    material.DisableKeyword("SOFT_OCCLUSION");
-
-                    material.EnableKeyword("_ENVIRONMENTDEPTHOCCLUSION_OFF");
-                }
+                    ConfigureMaterialOcclusion(material);
             }
-            
+
             ConsoleMessage.Send(true, $"Networked Transform - Disabled environment depth occlusion for {renderers.Length} renderers.", Color.cyan);
+        }
+
+        /// <summary>
+        /// Configures occlusion settings for a single material.
+        /// </summary>
+        private void ConfigureMaterialOcclusion(Material material)
+        {
+            if (material == null) return;
+
+            if (material.HasProperty("_EnvironmentDepthBias"))
+                material.SetFloat("_EnvironmentDepthBias", 1.0f);
+
+            if (material.HasProperty("_EnableOcclusionHardDepthSensitivity"))
+                material.SetFloat("_EnableOcclusionHardDepthSensitivity", 0f);
+
+            material.DisableKeyword("HARD_OCCLUSION");
+            material.DisableKeyword("SOFT_OCCLUSION");
+            material.EnableKeyword("_ENVIRONMENTDEPTHOCCLUSION_OFF");
         }
 
         /// <summary>
@@ -532,7 +601,7 @@ namespace MUES.Core
         {
             var renderPipelineAsset = GraphicsSettings.currentRenderPipeline;
 
-            if (renderPipelineAsset != null && renderPipelineAsset is UniversalRenderPipelineAsset urpAsset)
+            if (renderPipelineAsset is UniversalRenderPipelineAsset urpAsset)
                 return new UniversalRPMaterialGenerator(urpAsset);
 
             return null;
@@ -544,27 +613,15 @@ namespace MUES.Core
         private async Task AddMeshCollidersAsync(Transform parent)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            var stepWatch = new System.Diagnostics.Stopwatch();
 
-            var nodesToProcess = new System.Collections.Generic.List<Transform>();
+            var nodesToProcess = new List<Transform>();
             GetChildrenRecursive(parent, nodesToProcess);
 
             ConsoleMessage.Send(true, $"Networked Transform - Processing {nodesToProcess.Count} nodes for colliders.", Color.cyan);
 
             foreach (Transform child in nodesToProcess)
             {
-                stepWatch.Restart();
-
-                if (child.TryGetComponent<MeshFilter>(out var filter) && filter.sharedMesh != null && !child.TryGetComponent<MeshCollider>(out _))
-                {
-                    MeshCollider col = child.gameObject.AddComponent<MeshCollider>();
-                    col.sharedMesh = filter.sharedMesh;
-                    col.convex = filter.sharedMesh.vertexCount <= 5000;
-
-                    stepWatch.Stop();
-                    if (stepWatch.ElapsedMilliseconds > 20)
-                        ConsoleMessage.Send(true, $"Networked Transform - Single collider gen took {stepWatch.ElapsedMilliseconds}ms for {child.name} (Verts: {filter.sharedMesh.vertexCount})", Color.yellow);
-                }
+                TryAddMeshCollider(child);
 
                 if (stopwatch.ElapsedMilliseconds > 8)
                 {
@@ -572,13 +629,33 @@ namespace MUES.Core
                     stopwatch.Restart();
                 }
             }
+
             ConsoleMessage.Send(true, "Networked Transform - Collider Generation finished.", Color.green);
+        }
+
+        /// <summary>
+        /// Attempts to add a mesh collider to a transform if it has a valid mesh filter.
+        /// </summary>
+        private void TryAddMeshCollider(Transform child)
+        {
+            if (!child.TryGetComponent<MeshFilter>(out var filter) || filter.sharedMesh == null) return;
+            if (child.TryGetComponent<MeshCollider>(out _)) return;
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            MeshCollider col = child.gameObject.AddComponent<MeshCollider>();
+            col.sharedMesh = filter.sharedMesh;
+            col.convex = filter.sharedMesh.vertexCount <= 5000;
+
+            stopwatch.Stop();
+            if (stopwatch.ElapsedMilliseconds > 20)
+                ConsoleMessage.Send(true, $"Networked Transform - Single collider gen took {stopwatch.ElapsedMilliseconds}ms for {child.name} (Verts: {filter.sharedMesh.vertexCount})", Color.yellow);
         }
 
         /// <summary>
         /// Gets all child transforms recursively.
         /// </summary>
-        private void GetChildrenRecursive(Transform parent, System.Collections.Generic.List<Transform> list)
+        private void GetChildrenRecursive(Transform parent, List<Transform> list)
         {
             foreach (Transform child in parent)
             {
@@ -603,36 +680,40 @@ namespace MUES.Core
                 return;
             }
 
-            if (!TryGetComponent<Rigidbody>(out var rb))
-            {
-                rb = gameObject.AddComponent<Rigidbody>();
-                rb.isKinematic = true;
-                rb.useGravity = false;
-            }
+            var rb = EnsureRigidbody();
 
             _grabbable = gameObject.AddComponent<Grabbable>();
             _grabInteractable = gameObject.AddComponent<GrabInteractable>();
             _handGrabInteractable = gameObject.AddComponent<HandGrabInteractable>();
 
             _grabbable.InjectOptionalRigidbody(rb);
-
             _grabInteractable.InjectOptionalPointableElement(_grabbable);
             _grabInteractable.InjectRigidbody(rb);
-
             _handGrabInteractable.InjectOptionalPointableElement(_grabbable);
             _handGrabInteractable.InjectRigidbody(rb);
 
             gameObject.AddComponent<TransferOwnershipOnSelect>();
 
-            ownershipTransfer = GetComponent<TransferOwnershipFusion>();
-            if (ownershipTransfer == null)
-                ownershipTransfer = gameObject.AddComponent<TransferOwnershipFusion>();
+            _ownershipTransfer = GetComponent<TransferOwnershipFusion>() ?? gameObject.AddComponent<TransferOwnershipFusion>();
 
             _grabbable.WhenPointerEventRaised += OnPointerEvent;
 
             SetGrabbableComponentsEnabled(false);
 
             ConsoleMessage.Send(true, $"Networked Transform - Grabbable components added (initially disabled). Grabbable={_grabbable != null}, GrabInteractable={_grabInteractable != null}, HandGrab={_handGrabInteractable != null}", Color.green);
+        }
+
+        /// <summary>
+        /// Ensures a Rigidbody component exists on the object, creating one if necessary.
+        /// </summary>
+        private Rigidbody EnsureRigidbody()
+        {
+            if (TryGetComponent<Rigidbody>(out var rb)) return rb;
+
+            rb = gameObject.AddComponent<Rigidbody>();
+            rb.isKinematic = true;
+            rb.useGravity = false;
+            return rb;
         }
 
         /// <summary>
@@ -643,7 +724,7 @@ namespace MUES.Core
             if (_grabbable != null) _grabbable.enabled = enabled;
             if (_grabInteractable != null) _grabInteractable.enabled = enabled;
             if (_handGrabInteractable != null) _handGrabInteractable.enabled = enabled;
-            if (ownershipTransfer != null) ownershipTransfer.enabled = enabled;
+            if (_ownershipTransfer != null) _ownershipTransfer.enabled = enabled;
         }
 
         /// <summary>
@@ -678,11 +759,11 @@ namespace MUES.Core
         }
 
         /// <summary>
-        /// Deletes this networked object. Only allowed for players who have control permission!
+        /// Deletes this networked object. Only allowed for players who have control permission.
         /// </summary>
         public void Delete()
         {
-            if (Runner == null || Object == null || !Object.IsValid)
+            if (Runner == null || !IsObjectValid)
             {
                 ConsoleMessage.Send(true, "Networked Transform - Cannot delete: Runner or Object invalid.", Color.red);
                 return;
@@ -696,15 +777,15 @@ namespace MUES.Core
 
             ConsoleMessage.Send(true, $"Networked Transform - Deleting object: {gameObject.name}", Color.cyan);
 
-            if (!Object.HasStateAuthority)
-            {
-                Object.RequestStateAuthority();
-                StartCoroutine(DeleteAfterAuthority());
-            }
-            else
+            if (Object.HasStateAuthority)
             {
                 Runner.Despawn(Object);
                 ConsoleMessage.Send(true, $"Networked Transform - Object despawned: {gameObject.name}", Color.green);
+            }
+            else
+            {
+                Object.RequestStateAuthority();
+                StartCoroutine(DeleteAfterAuthority());
             }
         }
 
@@ -713,25 +794,29 @@ namespace MUES.Core
         /// </summary>
         private IEnumerator DeleteAfterAuthority()
         {
-            float timeout = 5f;
-            float elapsed = 0f;
+            bool hasAuthority = false;
 
-            while (elapsed < timeout)
-            {
-                if (Object == null || !Object.IsValid) yield break;
-
-                if (Object.HasStateAuthority)
+            yield return WaitForCondition(
+                () =>
                 {
-                    Runner.Despawn(Object);
-                    ConsoleMessage.Send(true, $"Networked Transform - Object despawned after authority transfer: {gameObject.name}", Color.green);
-                    yield break;
-                }
+                    if (!IsObjectValid) return true;
+                    hasAuthority = Object.HasStateAuthority;
+                    return hasAuthority;
+                },
+                DefaultTimeout
+            );
 
-                elapsed += Time.deltaTime;
-                yield return null;
+            if (!IsObjectValid) yield break;
+
+            if (hasAuthority)
+            {
+                Runner.Despawn(Object);
+                ConsoleMessage.Send(true, $"Networked Transform - Object despawned after authority transfer: {gameObject.name}", Color.green);
             }
-
-            ConsoleMessage.Send(true, $"Networked Transform - Timeout waiting for authority to delete: {gameObject.name}", Color.yellow);
+            else
+            {
+                ConsoleMessage.Send(true, $"Networked Transform - Timeout waiting for authority to delete: {gameObject.name}", Color.yellow);
+            }
         }
 
         /// <summary>
@@ -739,13 +824,7 @@ namespace MUES.Core
         /// </summary>
         private void UpdateGrabbableState()
         {
-            if (_grabbable == null)
-            {
-                _grabbable = GetComponent<Grabbable>();
-                _grabInteractable = GetComponent<GrabInteractable>();
-                _handGrabInteractable = GetComponent<HandGrabInteractable>();
-                ownershipTransfer = GetComponent<TransferOwnershipFusion>();
-            }
+            EnsureGrabbableReferences();
 
             if (_grabbable == null && _grabInteractable == null && _handGrabInteractable == null)
                 return;
@@ -755,7 +834,27 @@ namespace MUES.Core
             catch { isAllowed = false; }
 
             SetGrabbableComponentsEnabled(isAllowed);
+            LogGrabbableState(isAllowed);
+        }
 
+        /// <summary>
+        /// Ensures all grabbable component references are up to date.
+        /// </summary>
+        private void EnsureGrabbableReferences()
+        {
+            if (_grabbable != null) return;
+
+            _grabbable = GetComponent<Grabbable>();
+            _grabInteractable = GetComponent<GrabInteractable>();
+            _handGrabInteractable = GetComponent<HandGrabInteractable>();
+            _ownershipTransfer = GetComponent<TransferOwnershipFusion>();
+        }
+
+        /// <summary>
+        /// Logs the current grabbable state for debugging purposes.
+        /// </summary>
+        private void LogGrabbableState(bool isAllowed)
+        {
             if (!isAllowed)
             {
                 try
@@ -768,7 +867,9 @@ namespace MUES.Core
                 }
             }
             else
+            {
                 ConsoleMessage.Send(true, $"Networked Transform - Grabbable ENABLED for local player on {gameObject.name}", Color.green);
+            }
         }
 
         /// <summary>
@@ -781,10 +882,9 @@ namespace MUES.Core
         /// </summary>
         public void TransferSpawnerOwnership()
         {
-            if (Runner == null || !SpawnerControlsTransform) return;
+            if (Runner == null || !SpawnerControlsTransform || IsSpawnerConnected) return;
 
-            if (!IsSpawnerConnected)
-                StartCoroutine(TransferSpawnerOwnershipAsync());
+            StartCoroutine(TransferSpawnerOwnershipAsync());
         }
 
         /// <summary>
@@ -792,45 +892,22 @@ namespace MUES.Core
         /// </summary>
         private IEnumerator TransferSpawnerOwnershipAsync()
         {
-            if (Runner == null || Object == null || !Object.IsValid) yield break;
+            if (Runner == null || !IsObjectValid) yield break;
 
             ConsoleMessage.Send(true, $"Networked Transform - Starting async spawner ownership transfer for {gameObject.name}", Color.cyan);
 
-            bool hasAuth = false;
-            try
+            if (!TryRequestStateAuthority()) yield break;
+
+            bool hasAuth = Object.HasStateAuthority;
+
+            if (!hasAuth)
             {
-                hasAuth = Object.HasStateAuthority;
-                if (!hasAuth)
-                {
-                    Object.RequestStateAuthority();
-                    ConsoleMessage.Send(true, $"Networked Transform - Requested StateAuthority for {gameObject.name}", Color.cyan);
-                }
-            }
-            catch (System.Exception ex)
-            {
-                ConsoleMessage.Send(true, $"Networked Transform - Error requesting StateAuthority: {ex.Message}", Color.yellow);
-                yield break;
-            }
+                yield return WaitForCondition(
+                    () => !IsObjectValid || Object.HasStateAuthority,
+                    DefaultTimeout
+                );
 
-            float timeout = 3f;
-            float elapsed = 0f;
-
-            while (elapsed < timeout)
-            {
-                if (Object == null || !Object.IsValid) yield break;
-
-                try
-                {
-                    if (Object.HasStateAuthority)
-                    {
-                        hasAuth = true;
-                        break;
-                    }
-                }
-                catch { yield break; }
-
-                elapsed += Time.deltaTime;
-                yield return null;
+                hasAuth = IsObjectValid && Object.HasStateAuthority;
             }
 
             if (!hasAuth)
@@ -840,21 +917,46 @@ namespace MUES.Core
             }
 
             if (!IsSpawnerConnected)
+                ExecuteOwnershipTransfer();
+        }
+
+        /// <summary>
+        /// Attempts to request state authority, returning true if successful or already possessed.
+        /// </summary>
+        private bool TryRequestStateAuthority()
+        {
+            try
             {
-                try
-                {
-                    int oldSpawnerId = SpawnerPlayerId;
-                    SpawnerPlayerId = Runner.LocalPlayer.PlayerId;
+                if (Object.HasStateAuthority) return true;
 
-                    Object.AssignInputAuthority(Runner.LocalPlayer);
-                    ConsoleMessage.Send(true, $"Networked Transform - Transferred spawner ownership from {oldSpawnerId} to {SpawnerPlayerId}", Color.green);
+                Object.RequestStateAuthority();
+                ConsoleMessage.Send(true, $"Networked Transform - Requested StateAuthority for {gameObject.name}", Color.cyan);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ConsoleMessage.Send(true, $"Networked Transform - Error requesting StateAuthority: {ex.Message}", Color.yellow);
+                return false;
+            }
+        }
 
-                    UpdateGrabbableState();
-                }
-                catch (System.Exception ex)
-                {
-                    ConsoleMessage.Send(true, $"Networked Transform - Error transferring ownership: {ex.Message}", Color.yellow);
-                }
+        /// <summary>
+        /// Executes the actual ownership transfer to the local player.
+        /// </summary>
+        private void ExecuteOwnershipTransfer()
+        {
+            try
+            {
+                int oldSpawnerId = SpawnerPlayerId;
+                SpawnerPlayerId = Runner.LocalPlayer.PlayerId;
+                Object.AssignInputAuthority(Runner.LocalPlayer);
+
+                ConsoleMessage.Send(true, $"Networked Transform - Transferred spawner ownership from {oldSpawnerId} to {SpawnerPlayerId}", Color.green);
+                UpdateGrabbableState();
+            }
+            catch (Exception ex)
+            {
+                ConsoleMessage.Send(true, $"Networked Transform - Error transferring ownership: {ex.Message}", Color.yellow);
             }
         }
 

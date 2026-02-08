@@ -43,7 +43,7 @@ namespace MUES.Core
         [HideInInspector] public GameObject virtualRoom; // Root object for instantiated room geometry.
         [HideInInspector] public int chairCount = 0; // Count of chairs placed in the room.
 
-        public RoomData GetCurrentRoomData() => currentRoomData; // Public getter for networking
+        private const float DefaultTimeout = 7f; // Default timeout for waiting operations.
 
         private ParticleSystem _particleSystem; // Reference to the ParticleSystem component.
         private ParticleSystemRenderer _particleSystemRenderer; // Reference to the ParticleSystemRenderer component.
@@ -65,6 +65,8 @@ namespace MUES.Core
         private OVRSpatialAnchor _remoteLocalAnchor; // Local spatial anchor for remote clients (analogous to shared spatial anchor for colocated)
         private Transform remoteSceneParent; // Scene parent for remote clients - mirrors MUES_Networking.sceneParent behavior
         private MUES_SceneParentStabilizer _remoteStabilizer; // Shared stabilizer utility for remote clients
+
+        private MUES_Networking Net => MUES_Networking.Instance; // Single source of truth for networking instance.
 
         public static float floorHeight = 0f; // Static variable to hold the floor height.
         public static MUES_RoomVisualizer Instance { get; private set; }
@@ -115,7 +117,6 @@ namespace MUES.Core
             _remoteStabilizer = new MUES_SceneParentStabilizer();
 
             var debugger = FindFirstObjectByType<ImmersiveSceneDebugger>();
-
             if (debugger && isActiveAndEnabled)
             {
                 debugger.gameObject.SetActive(false);
@@ -136,9 +137,7 @@ namespace MUES.Core
 
         private void Update()
         {
-            var net = MUES_Networking.Instance;
-            if (!net.isConnected && net.Runner != null && !net.Runner.IsSharedModeMasterClient) return;
-
+            if (!Net.isConnected && Net.Runner != null && !Net.Runner.IsSharedModeMasterClient) return;
             if (!chairPlacement || previewChair == null) return;
 
             Ray ray = new(rightController.transform.position, rightController.transform.forward);
@@ -147,7 +146,7 @@ namespace MUES.Core
             previewChair.SetActive(rayHit);
 
             if (GetDown(saveRoomButton)) FinalizeRoomData();
-            if (GetDown(RawButton.RIndexTrigger, Controller.RTouch) && chairCount < net.maxPlayers && rayHit && !chairAnimInProgress)
+            if (GetDown(RawButton.RIndexTrigger, Controller.RTouch) && chairCount < Net.maxPlayers && rayHit && !chairAnimInProgress)
                 StartCoroutine(PlaceChair(hitInfo.point, previewChair.transform.localScale));
 
             if (previewChair.activeSelf)
@@ -159,7 +158,17 @@ namespace MUES.Core
 
         private void LateUpdate() => UpdateRemoteSceneParent();
 
-        #region Scene Mesh Data Serialization - Capture
+        #region Public API
+
+        /// <summary>
+        /// Returns the current room data.
+        /// </summary>
+        public RoomData GetCurrentRoomData() => currentRoomData;
+
+        /// <summary>
+        /// Gets the remote scene parent transform. Returns null if not a remote client.
+        /// </summary>
+        public Transform GetRemoteSceneParent() => remoteSceneParent;
 
         /// <summary>
         /// Captures the room by loading the scene from the device. (HOST ONLY)
@@ -167,44 +176,250 @@ namespace MUES.Core
         public void CaptureRoom() => StartCoroutine(CaptureRoomRoutine());
 
         /// <summary>
+        /// Loads a room from room data and instantiates geometry.
+        /// </summary>
+        public void InstantiateRoomGeometry()
+        {
+            if (currentRoomData == null)
+            {
+                Debug.LogError("[MUES_RoomVisualizer] No data provided! Can't load room!");
+                return;
+            }
+
+            ClearRoomVisualization();
+            virtualRoom = new GameObject("InstantiatedRoom");
+
+            SetFloorHeight();
+            ParentVirtualRoom();
+            InstantiateAnchors();
+
+            Debug.Log($"<color=lime>[MUES_RoomVisualizer] Instantiated {instantiatedRoomPrefabs.Count} anchors from room data.</color>");
+            InitializeVisuals();
+        }
+
+        /// <summary>
+        /// Sets the current room data from a JSON string and instantiates geometry.
+        /// </summary>
+        public void SetRoomDataFromJson(string json)
+        {
+            currentRoomData = JsonUtility.FromJson<RoomData>(json);
+            ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] Room data received via JSON, instantiating geometry...", Color.green);
+            InstantiateRoomGeometry();
+        }
+
+        /// <summary>
+        /// Sets the current room data directly.
+        /// </summary>
+        public void SetRoomData(RoomData data)
+        {
+            currentRoomData = data;
+            ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] Room data object set directly, instantiating geometry...", Color.green);
+            InstantiateRoomGeometry();
+        }
+
+        /// <summary>
+        /// Toggles the visualization of the scene.
+        /// </summary>
+        public void ToggleVisualization()
+        {
+            sceneShown = !sceneShown;
+            StartCoroutine(ToggleVisualizationRoutine(sceneShown));
+        }
+
+        /// <summary>
+        /// Clears the current room visualization.
+        /// </summary>
+        public void ClearRoomVisualization()
+        {
+            foreach (var old in instantiatedRoomPrefabs)
+                if (old != null && old.transform != null)
+                    Destroy(old.transform.gameObject);
+
+            instantiatedRoomPrefabs.Clear();
+            chairsInScene.Clear();
+
+            if (virtualRoom != null)
+            {
+                Destroy(virtualRoom);
+                virtualRoom = null;
+            }
+
+            if (_remoteLocalAnchor != null)
+            {
+                Destroy(_remoteLocalAnchor.gameObject);
+                _remoteLocalAnchor = null;
+            }
+
+            if (remoteSceneParent != null)
+            {
+                Destroy(remoteSceneParent.gameObject);
+                remoteSceneParent = null;
+            }
+
+            _remoteStabilizer.Reset();
+        }
+
+        /// <summary>
+        /// Renders or hides the room geometry by adjusting the camera's culling mask.
+        /// </summary>
+        public void RenderRoomGeometry(bool render)
+        {
+            int combinedMask = LayerMask.GetMask("MUES_RoomGeometry", "MUES_Wall");
+            Camera cam = Camera.main;
+
+            if (render) cam.cullingMask |= combinedMask;
+            else cam.cullingMask &= ~combinedMask;
+
+            OnRoomGeometryRenderChanged?.Invoke(render);
+        }
+
+        /// <summary>
+        /// Toggles the visibility of the scene while a loading process is in progress.
+        /// </summary>
+        public void HideSceneWhileLoading(bool hide)
+        {
+            Camera cam = Camera.main;
+            if (cam == null) return;
+
+            cam.cullingMask = hide ? LayerMask.GetMask("MUES_RenderWhileLoading") : originalCullingMask | LayerMask.GetMask("MUES_Floor");
+
+            if (hide) OnLoadingStarted?.Invoke();
+            else OnLoadingEnded?.Invoke();
+        }
+
+        /// <summary>
+        /// Sends the captured room data to other clients.
+        /// </summary>
+        public void SendRoomDataTo(PlayerRef player)
+        {
+            if (!Net.Runner.IsSharedModeMasterClient)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] SendRoomDataTo: no StateAuthority.", Color.red);
+                return;
+            }
+
+            string json = JsonUtility.ToJson(currentRoomData);
+            ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Sending room data to player {player}...", Color.cyan);
+            currentRoomData = null;
+
+            RPC_ReceiveRoomDataForPlayer(player, json);
+        }
+
+        /// <summary>
+        /// Teleports the local OVRCameraRig to the first available chair in the scene. (REMOTE CLIENT ONLY)
+        /// </summary>
+        public IEnumerator TeleportToFirstFreeChair()
+        {
+            if (Net == null || !Net.isRemote)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] TeleportToFirstFreeChair skipped - not a remote client.", Color.yellow);
+                OnTeleportCompleted?.Invoke();
+                yield break;
+            }
+
+            yield return WaitForConditionWithTimeout(() => Net.isConnected, DefaultTimeout);
+
+            yield return WaitForChairsInScene();
+
+            if (chairsInScene.Count == 0)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] No chairs in scene to teleport to.", Color.yellow);
+                OnTeleportCompleted?.Invoke();
+                yield break;
+            }
+
+            ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Looking for free chair among {chairsInScene.Count} chairs...", Color.cyan);
+
+            var targetChair = chairsInScene.FirstOrDefault(c => c != null && !c.IsOccupied)?.transform;
+            Vector3 targetPosition = GetTeleportTargetPosition(targetChair);
+
+            TeleportCameraRig(targetPosition);
+
+            yield return CreateRemoteLocalAnchor();
+            OnTeleportCompleted?.Invoke();
+        }
+
+        #endregion
+
+        #region Scene Mesh Data Serialization - Capture
+
+        /// <summary>
         /// Coroutine to capture the scene. (HOST ONLY)
-        /// </summary>  
+        /// </summary>
         private IEnumerator CaptureRoomRoutine()
         {
             yield return new WaitForEndOfFrame();
 
-            var net = MUES_Networking.Instance;
-            MRUKRoom room = net?.activeRoom;
-            
+            MRUKRoom room = GetActiveRoom();
+            if (room == null)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] No MRUKRoom found in scene! Can't capture room!", Color.red);
+                Net.LeaveRoom();
+                yield break;
+            }
+
+            ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Capturing room: {room.name} with {room.Anchors.Count} anchors.", Color.cyan);
+            room.transform.localScale = Vector3.one;
+
+            yield return null;
+
+            Transform referenceTransform = Net?.sceneParent ?? room.transform;
+            LogReferenceTransform(referenceTransform);
+
+            currentRoomData = BuildRoomData(room.Anchors, referenceTransform);
+            CaptureTableTransforms();
+
+            Transform floorTransform = GetFloorTransform(room.Anchors);
+            if (floorTransform == null)
+            {
+                Net.LeaveRoom();
+                yield break;
+            }
+
+            if (!SetupFloor(floorTransform))
+            {
+                Net.LeaveRoom();
+                yield break;
+            }
+
+            Destroy(room.gameObject);
+
+            yield return new WaitForSeconds(0.1f);
+            yield return SwitchToChairPlacement(true);
+        }
+
+        /// <summary>
+        /// Retrieves the active MRUKRoom from the networking instance or by finding it in the scene.
+        /// </summary>
+        private MRUKRoom GetActiveRoom()
+        {
+            MRUKRoom room = Net?.activeRoom;
             if (room == null)
             {
                 room = FindFirstObjectByType<MRUKRoom>();
                 ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] Warning: activeRoom was null, falling back to FindFirstObjectByType.", Color.yellow);
             }
-            
-            if (room == null)
-            {
-                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] No MRUKRoom found in scene! Can't capture room!", Color.red);
-                net.LeaveRoom();
-                yield break;
-            }
-            
-            ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Capturing room: {room.name} with {room.Anchors.Count} anchors.", Color.cyan);
+            return room;
+        }
 
-            room.transform.localScale = Vector3.one;
-
-            yield return null;
-
-            Transform referenceTransform = net?.sceneParent ?? room.transform;
-
-            if (net?.sceneParent != null)
+        /// <summary>
+        /// Logs information about the reference transform used for room capture.
+        /// </summary>
+        private void LogReferenceTransform(Transform referenceTransform)
+        {
+            if (Net?.sceneParent != null)
                 Debug.Log($"[MUES_RoomVisualizer] Capturing room relative to SceneParent: {referenceTransform.name}");
             else
                 Debug.LogWarning("[MUES_RoomVisualizer] Capturing room relative to Room transform (SceneParent not found), this may cause misalignment.");
+        }
 
-            var anchors = room.Anchors;
+        /// <summary>
+        /// Builds room data from the given anchors and reference transform.
+        /// </summary>
+        private RoomData BuildRoomData(List<MRUKAnchor> anchors, Transform referenceTransform)
+        {
             var anchorTransformDataList = new List<AnchorTransformData>(anchors.Count);
-            var _floorCeilingData = new FloorCeilingData();
+            var floorCeilingData = new FloorCeilingData();
 
             foreach (var anchor in anchors)
             {
@@ -216,7 +431,6 @@ namespace MUES.Core
                     anchor.transform.localScale);
 
                 var prefab = anchor.transform.GetChild(0);
-
                 var prefabData = new TransformationData(
                     prefab.transform.localPosition,
                     prefab.transform.localRotation,
@@ -230,71 +444,86 @@ namespace MUES.Core
                     prefabTransform = prefabData
                 };
 
-                if (anchor.name == "FLOOR" || anchor.name == "CEILING")
-                {
-                    var mf = prefab.GetComponent<MeshFilter>();
-                    if (mf?.sharedMesh != null)
-                    {
-                        var mesh = mf.sharedMesh;
-                        var verts = mesh.vertices;
-                        var norms = mesh.normals;
-                        var uvs = mesh.uv;
-                        int vCount = verts.Length;
-                        var vertexArray = new VertexData[vCount];
-
-                        bool hasNorms = norms != null && norms.Length == vCount;
-                        bool hasUvs = uvs != null && uvs.Length == vCount;
-
-                        for (int i = 0; i < vCount; i++)
-                            vertexArray[i] = new VertexData(verts[i], hasNorms ? norms[i] : Vector3.up, hasUvs ? uvs[i] : Vector2.zero);
-
-                        if (anchor.name == "FLOOR")
-                        {
-                            _floorCeilingData.floorVertices = vertexArray;
-                            _floorCeilingData.floorTriangles = mesh.triangles;
-                            floorHeight = anchor.transform.position.y;
-                        }
-                        else
-                        {
-                            _floorCeilingData.ceilingVertices = vertexArray;
-                            _floorCeilingData.ceilingTriangles = mesh.triangles;
-                        }
-                    }
-                }
-
+                CaptureFloorCeilingMesh(anchor, prefab, floorCeilingData);
                 anchorTransformDataList.Add(entry);
             }
 
-            currentRoomData = new RoomData
+            return new RoomData
             {
                 anchorTransformData = anchorTransformDataList.ToArray(),
-                floorCeilingData = _floorCeilingData
+                floorCeilingData = floorCeilingData
             };
+        }
 
+        /// <summary>
+        /// Captures mesh data for floor and ceiling anchors.
+        /// </summary>
+        private void CaptureFloorCeilingMesh(MRUKAnchor anchor, Transform prefab, FloorCeilingData floorCeilingData)
+        {
+            if (anchor.name != "FLOOR" && anchor.name != "CEILING") return;
+
+            var mf = prefab.GetComponent<MeshFilter>();
+            if (mf?.sharedMesh == null) return;
+
+            var mesh = mf.sharedMesh;
+            var verts = mesh.vertices;
+            var norms = mesh.normals;
+            var uvs = mesh.uv;
+            int vCount = verts.Length;
+            var vertexArray = new VertexData[vCount];
+
+            bool hasNorms = norms != null && norms.Length == vCount;
+            bool hasUvs = uvs != null && uvs.Length == vCount;
+
+            for (int i = 0; i < vCount; i++)
+                vertexArray[i] = new VertexData(verts[i], hasNorms ? norms[i] : Vector3.up, hasUvs ? uvs[i] : Vector2.zero);
+
+            if (anchor.name == "FLOOR")
+            {
+                floorCeilingData.floorVertices = vertexArray;
+                floorCeilingData.floorTriangles = mesh.triangles;
+                floorHeight = anchor.transform.position.y;
+            }
+            else
+            {
+                floorCeilingData.ceilingVertices = vertexArray;
+                floorCeilingData.ceilingTriangles = mesh.triangles;
+            }
+        }
+
+        /// <summary>
+        /// Captures table transforms from the scene and parents them to the scene parent.
+        /// </summary>
+        private void CaptureTableTransforms()
+        {
             currentTableTransforms.Clear();
-           
+
             var tableAnchors = FindObjectsByType<MRUKAnchor>(FindObjectsSortMode.None)
                 .Where(a => a.Label == MRUKAnchor.SceneLabels.TABLE)
                 .Select(a => a.transform)
                 .ToList();
-            
+
             foreach (var table in tableAnchors)
             {
-                if (!currentTableTransforms.Contains(table))
-                    currentTableTransforms.Add(table);
-            }
-            
-            ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Found {currentTableTransforms.Count} tables)", Color.cyan);
+                if (currentTableTransforms.Contains(table)) continue;
 
-            foreach (var table in currentTableTransforms)
-            {
+                currentTableTransforms.Add(table);
+
                 if (table.TryGetComponent<MRUKAnchor>(out var anchor))
                     anchor.enabled = false;
 
-                table.SetParent(net.sceneParent, true);
+                table.SetParent(Net.sceneParent, true);
                 table.localScale = Vector3.zero;
             }
 
+            ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Found {currentTableTransforms.Count} tables", Color.cyan);
+        }
+
+        /// <summary>
+        /// Retrieves the floor transform from the given anchors.
+        /// </summary>
+        private Transform GetFloorTransform(List<MRUKAnchor> anchors)
+        {
             Transform floorTransform = MUES_Networking.GetRoomCenter();
 
             if (floorTransform == null)
@@ -308,20 +537,26 @@ namespace MUES.Core
                 else
                 {
                     Debug.LogError("[MUES_RoomVisualizer] CaptureRoomRoutine: Room center transform is null and no FLOOR anchor found!");
-                    net.LeaveRoom();
-                    yield break;
+                    return null;
                 }
             }
 
             if (floorTransform.childCount == 0)
             {
                 Debug.LogError("[MUES_RoomVisualizer] CaptureRoomRoutine: FLOOR has no child objects!");
-                net.LeaveRoom();
-                yield break;
+                return null;
             }
 
+            return floorTransform;
+        }
+
+        /// <summary>
+        /// Sets up the floor object with proper components and parenting.
+        /// </summary>
+        private bool SetupFloor(Transform floorTransform)
+        {
             floor = floorTransform.GetChild(0).gameObject;
-            
+
             var floorRenderer = floor.transform.GetComponent<Renderer>();
             if (floorRenderer != null)
                 floorRenderer.enabled = false;
@@ -329,7 +564,7 @@ namespace MUES.Core
             if (floorTransform.TryGetComponent<MRUKAnchor>(out var floorMRUKAnchor))
                 floorMRUKAnchor.enabled = false;
 
-            floor.transform.parent.SetParent(net.sceneParent, true);
+            floor.transform.parent.SetParent(Net.sceneParent, true);
 
             if (!floor.TryGetComponent<Rigidbody>(out _))
             {
@@ -339,11 +574,7 @@ namespace MUES.Core
             }
 
             floor.layer = LayerMask.NameToLayer("MUES_Floor");
-
-            Destroy(room.gameObject);
-            
-            yield return new WaitForSeconds(0.1f);       
-            yield return SwitchToChairPlacement(true);
+            return true;
         }
 
         /// <summary>
@@ -355,13 +586,13 @@ namespace MUES.Core
                 item.GetComponent<MUES_AnchoredNetworkBehaviour>().ForceUpdateAnchorOffset();
 
             StartCoroutine(SwitchToChairPlacement(false));
-            MUES_Networking.Instance.EnableJoining();
+            Net.EnableJoining();
         }
 
         /// <summary>
         /// Returns an integer type based on the anchor's label. (HOST ONLY)
         /// </summary>
-        int GetTypeFromLabel(MRUKAnchor anchor)
+        private int GetTypeFromLabel(MRUKAnchor anchor)
         {
             if (anchor.Label == MRUKAnchor.SceneLabels.FLOOR || anchor.Label == MRUKAnchor.SceneLabels.CEILING)
                 return -1;
@@ -391,6 +622,29 @@ namespace MUES.Core
                 OnChairPlacementStarted?.Invoke();
             }
 
+            yield return AnimateTables(enabled);
+
+            if (enabled)
+            {
+                chairPlacement = true;
+            }
+            else
+            {
+                Destroy(previewChair);
+                Destroy(floor.transform.parent.gameObject);
+
+                foreach (var table in currentTableTransforms)
+                    Destroy(table.gameObject);
+
+                currentTableTransforms.Clear();
+            }
+        }
+
+        /// <summary>
+        /// Animates table scaling during chair placement mode transitions.
+        /// </summary>
+        private IEnumerator AnimateTables(bool enabled)
+        {
             Sequence seq = DOTween.Sequence();
             foreach (var table in currentTableTransforms)
             {
@@ -403,18 +657,6 @@ namespace MUES.Core
             }
 
             yield return seq.WaitForCompletion();
-
-            if (enabled) chairPlacement = true;
-            else
-            {
-                Destroy(previewChair);
-                Destroy(floor.transform.parent.gameObject);
-
-                foreach (var table in currentTableTransforms)
-                    Destroy(table.gameObject);
-
-                currentTableTransforms.Clear();
-            }
         }
 
         /// <summary>
@@ -429,16 +671,11 @@ namespace MUES.Core
                 Quaternion finalRot = rotation ?? previewChair.transform.rotation;
                 MUES_NetworkedObjectManager.Instance.Instantiate(networkedChairPrefab, position, finalRot, out MUES_NetworkedTransform spawnedObj);
 
-                float timeout = 1f;
-                float elapsed = 0f;
+                bool spawnComplete = false;
+                yield return WaitForConditionWithTimeout(() => spawnedObj != null, 1f, () => spawnComplete = false);
+                spawnComplete = spawnedObj != null;
 
-                while (spawnedObj == null && elapsed < timeout)
-                {
-                    elapsed += Time.deltaTime;
-                    yield return null;
-                }
-
-                if (spawnedObj == null)
+                if (!spawnComplete)
                 {
                     Debug.LogWarning("[MUES_RoomVisualizer] Chair spawn timed out or failed.");
                     yield break;
@@ -448,26 +685,9 @@ namespace MUES.Core
                     chairsInScene.Add(existingChair);
 
                 spawnedObj.transform.localScale = Vector3.zero;
-                var gft = spawnedObj.transform.GetComponent<GrabFreeTransformer>();
-
-                gft.InjectOptionalPositionConstraints(new PositionConstraints
-                {
-                    ConstraintsAreRelative = false,
-                    XAxis = ConstrainedAxis.Unconstrained,
-                    ZAxis = ConstrainedAxis.Unconstrained,
-                    YAxis = new ConstrainedAxis
-                    {
-                        ConstrainAxis = true,
-                        AxisRange = new FloatRange
-                        {
-                            Min = spawnedObj.transform.position.y,
-                            Max = spawnedObj.transform.position.y
-                        }
-                    }
-                });
+                ConfigureChairConstraints(spawnedObj);
 
                 yield return spawnedObj.transform.DOScale(targetScale, 0.3f).SetEase(Ease.OutExpo).WaitForCompletion();
-
                 OnChairPlaced?.Invoke(spawnedObj.transform);
             }
             finally
@@ -475,6 +695,29 @@ namespace MUES.Core
                 chairCount++;
                 chairAnimInProgress = false;
             }
+        }
+
+        /// <summary>
+        /// Configures position constraints for a placed chair.
+        /// </summary>
+        private void ConfigureChairConstraints(MUES_NetworkedTransform spawnedObj)
+        {
+            var gft = spawnedObj.transform.GetComponent<GrabFreeTransformer>();
+            gft.InjectOptionalPositionConstraints(new PositionConstraints
+            {
+                ConstraintsAreRelative = false,
+                XAxis = ConstrainedAxis.Unconstrained,
+                ZAxis = ConstrainedAxis.Unconstrained,
+                YAxis = new ConstrainedAxis
+                {
+                    ConstrainAxis = true,
+                    AxisRange = new FloatRange
+                    {
+                        Min = spawnedObj.transform.position.y,
+                        Max = spawnedObj.transform.position.y
+                    }
+                }
+            });
         }
 
         /// <summary>
@@ -517,20 +760,10 @@ namespace MUES.Core
         #region Scene Mesh Data Serialization - Place
 
         /// <summary>
-        /// Loads a room from room data.
+        /// Sets the floor height from current room data.
         /// </summary>
-        public void InstantiateRoomGeometry()
+        private void SetFloorHeight()
         {
-            if (currentRoomData == null)
-            {
-                Debug.LogError($"[MUES_CubicRoomVisualizer] No data provided! Can't load room!");
-                return;
-            }
-
-            ClearRoomVisualization();
-
-            virtualRoom = new("InstantiatedRoom");
-
             foreach (var data in currentRoomData.anchorTransformData)
             {
                 if (data.name == "FLOOR")
@@ -539,44 +772,35 @@ namespace MUES.Core
                     break;
                 }
             }
+        }
 
-            var net = MUES_Networking.Instance;
-            if (net != null)
-            {
-                if (net.isRemote)
-                {
-                    remoteSceneParent = GetOrCreateRemoteSceneParent();
-                    remoteSceneParent.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
-                    
-                    virtualRoom.transform.SetParent(remoteSceneParent, false);
-                    virtualRoom.transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
-                    virtualRoom.transform.localScale = Vector3.one;
-                    
-                    ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] InstantiateRoomGeometry: Remote client - Room parented to REMOTE_SCENE_PARENT at origin, will be anchored after teleport.", Color.cyan);
-                }
-                else
-                {
-                    if (net.sceneParent == null) net.InitSceneParent();
-
-                    if (net.sceneParent != null)
-                    {
-                        virtualRoom.transform.SetParent(net.sceneParent, false);
-                        virtualRoom.transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
-                        virtualRoom.transform.localScale = Vector3.one;
-                    }
-                    else
-                    {
-                        virtualRoom.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
-                        ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] InstantiateRoomGeometry: SceneParent null even after Init attempt. Placing at origin.", Color.yellow);
-                    }
-                }
-            }
-            else
+        /// <summary>
+        /// Parents the virtual room to the remote scene parent. Only applicable for remote clients.
+        /// </summary>
+        private void ParentVirtualRoom()
+        {
+            if (Net == null)
             {
                 virtualRoom.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
-                ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] InstantiateRoomGeometry: Networking null. Placing at origin.", Color.red);
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] ParentVirtualRoom: Networking null. Placing at origin.", Color.red);
+                return;
             }
 
+            remoteSceneParent = GetOrCreateRemoteSceneParent();
+            remoteSceneParent.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+
+            virtualRoom.transform.SetParent(remoteSceneParent, false);
+            virtualRoom.transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
+            virtualRoom.transform.localScale = Vector3.one;
+
+            ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] ParentVirtualRoom: Room parented to REMOTE_SCENE_PARENT at origin, will be anchored after teleport.", Color.cyan);
+        }
+
+        /// <summary>
+        /// Instantiates all anchors from the current room data.
+        /// </summary>
+        private void InstantiateAnchors()
+        {
             foreach (var data in currentRoomData.anchorTransformData)
             {
                 GameObject anchorInstance = new(data.name);
@@ -584,44 +808,50 @@ namespace MUES.Core
                 anchorInstance.transform.SetLocalPositionAndRotation(data.anchorTransform.ToPosition(), data.anchorTransform.ToRotation());
                 anchorInstance.transform.localScale = data.anchorTransform.ToScale();
 
-                GameObject prefabInstance;
-
-                if (data.type >= 0)
-                    prefabInstance = Instantiate(roomPrefabs[data.type], anchorInstance.transform);
-                else
-                {
-                    prefabInstance = new GameObject();
-                    prefabInstance.transform.SetParent(anchorInstance.transform);
-                }
-
+                GameObject prefabInstance = CreatePrefabInstance(data, anchorInstance.transform);
                 prefabInstance.transform.SetLocalPositionAndRotation(data.prefabTransform.ToPosition(), data.prefabTransform.ToRotation());
                 prefabInstance.transform.localScale = data.prefabTransform.ToScale();
 
                 if (data.type == -1)
-                {
-                    bool isFloor = data.name == "FLOOR";
-                    prefabInstance.name = isFloor ? "Floor" : "Ceiling";
-
-                    VertexData[] vertexDataArray = isFloor ? currentRoomData.floorCeilingData.floorVertices : currentRoomData.floorCeilingData.ceilingVertices;
-                    int[] tris = isFloor ? currentRoomData.floorCeilingData.floorTriangles : currentRoomData.floorCeilingData.ceilingTriangles;
-
-                    MeshFilter mf = prefabInstance.AddComponent<MeshFilter>();
-                    mf.sharedMesh = VertexData.CreateMeshFromVertexData(vertexDataArray, tris);
-                    mf.sharedMesh.name = isFloor ? "FloorMesh" : "CeilingMesh";
-
-                    prefabInstance.AddComponent<MeshRenderer>().material = floorCeilingMat;
-                    prefabInstance.AddComponent<MeshCollider>();
-
-                    if (isFloor)
-                        prefabInstance.layer = LayerMask.NameToLayer("MUES_Floor");
-                }
+                    SetupFloorCeilingPrefab(data, prefabInstance);
 
                 instantiatedRoomPrefabs.Add(anchorInstance.transform);
             }
+        }
 
-            Debug.Log($"<color=lime>[MUES_CubicRoomVisualizer] Instantiated {instantiatedRoomPrefabs.Count} anchors from room data.</color>");
+        /// <summary>
+        /// Creates a prefab instance for the given anchor data.
+        /// </summary>
+        private GameObject CreatePrefabInstance(AnchorTransformData data, Transform parent)
+        {
+            if (data.type >= 0)
+                return Instantiate(roomPrefabs[data.type], parent);
 
-            InitializeVisuals();
+            GameObject prefabInstance = new GameObject();
+            prefabInstance.transform.SetParent(parent);
+            return prefabInstance;
+        }
+
+        /// <summary>
+        /// Sets up floor or ceiling prefab with mesh and materials.
+        /// </summary>
+        private void SetupFloorCeilingPrefab(AnchorTransformData data, GameObject prefabInstance)
+        {
+            bool isFloor = data.name == "FLOOR";
+            prefabInstance.name = isFloor ? "Floor" : "Ceiling";
+
+            VertexData[] vertexDataArray = isFloor ? currentRoomData.floorCeilingData.floorVertices : currentRoomData.floorCeilingData.ceilingVertices;
+            int[] tris = isFloor ? currentRoomData.floorCeilingData.floorTriangles : currentRoomData.floorCeilingData.ceilingTriangles;
+
+            MeshFilter mf = prefabInstance.AddComponent<MeshFilter>();
+            mf.sharedMesh = VertexData.CreateMeshFromVertexData(vertexDataArray, tris);
+            mf.sharedMesh.name = isFloor ? "FloorMesh" : "CeilingMesh";
+
+            prefabInstance.AddComponent<MeshRenderer>().material = floorCeilingMat;
+            prefabInstance.AddComponent<MeshCollider>();
+
+            if (isFloor)
+                prefabInstance.layer = LayerMask.NameToLayer("MUES_Floor");
         }
 
         /// <summary>
@@ -634,29 +864,13 @@ namespace MUES.Core
         }
 
         /// <summary>
-        /// Gets the remote scene parent transform. Returns null if not a remote client.
+        /// Waits for chairs to appear in the scene within the timeout period.
         /// </summary>
-        public Transform GetRemoteSceneParent() => remoteSceneParent;
-
-        /// <summary>
-        /// Teleports the local OVRCameraRig to the first available chair in the scene. (REMOTE CLIENT ONLY)    
-        /// </summary>
-        public IEnumerator TeleportToFirstFreeChair()
+        private IEnumerator WaitForChairsInScene()
         {
-            var net = MUES_Networking.Instance;
-            if (net == null || !net.isRemote)
-            {
-                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] TeleportToFirstFreeChair skipped - not a remote client.", Color.yellow);
-                OnTeleportCompleted?.Invoke();
-                yield break;
-            }
-
-            yield return new WaitUntil(() => net.isConnected);
-
-            float timeout = 5f;
             float elapsed = 0f;
 
-            while (chairsInScene.Count == 0 && elapsed < timeout)
+            while (chairsInScene.Count == 0 && elapsed < DefaultTimeout)
             {
                 var foundChairs = FindObjectsByType<MUES_Chair>(FindObjectsSortMode.None);
                 if (foundChairs != null && foundChairs.Length > 0)
@@ -668,33 +882,34 @@ namespace MUES.Core
                 elapsed += Time.deltaTime;
                 yield return null;
             }
+        }
 
-            if (chairsInScene.Count == 0)
-            {
-                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] No chairs in scene to teleport to.", Color.yellow);
-                OnTeleportCompleted?.Invoke();
-                yield break;
-            }
-
-            ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Looking for free chair among {chairsInScene.Count} chairs...", Color.cyan);
-
-            var targetChair = chairsInScene.FirstOrDefault(c => c != null && !c.IsOccupied)?.transform;
-            Vector3 targetPosition;
-
+        /// <summary>
+        /// Gets the teleport target position from a chair or room center.
+        /// </summary>
+        private Vector3 GetTeleportTargetPosition(Transform targetChair)
+        {
             if (targetChair != null)
             {
                 ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Teleporting to chair at position {targetChair.position}.", Color.green);
-                targetPosition = targetChair.position;
-            }
-            else
-            {
-                ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] No free chair found, teleporting to room center and activating teleport surface.", Color.yellow);
-                Transform roomCenter = MUES_Networking.GetRoomCenter();
-                targetPosition = roomCenter != null ? roomCenter.position : Vector3.zero;
-                if (roomCenter != null)
-                    Instantiate(teleportSurface, targetPosition, Quaternion.identity, roomCenter);
+                return targetChair.position;
             }
 
+            ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] No free chair found, teleporting to room center and activating teleport surface.", Color.yellow);
+            Transform roomCenter = MUES_Networking.GetRoomCenter();
+            Vector3 targetPosition = roomCenter != null ? roomCenter.position : Vector3.zero;
+
+            if (roomCenter != null)
+                Instantiate(teleportSurface, targetPosition, Quaternion.identity, roomCenter);
+
+            return targetPosition;
+        }
+
+        /// <summary>
+        /// Teleports the camera rig to the specified position with offset compensation.
+        /// </summary>
+        private void TeleportCameraRig(Vector3 targetPosition)
+        {
             var ovrManager = OVRManager.instance;
             var rig = ovrManager.GetComponent<OVRCameraRig>();
 
@@ -713,10 +928,9 @@ namespace MUES.Core
                 ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Teleported with offset compensation. Head offset: {horizontalOffset}", Color.green);
             }
             else
+            {
                 ovrManager.transform.SetPositionAndRotation(targetPosition, ovrManager.transform.rotation);
-
-            yield return CreateRemoteLocalAnchor();
-            OnTeleportCompleted?.Invoke();
+            }
         }
 
         /// <summary>
@@ -724,8 +938,7 @@ namespace MUES.Core
         /// </summary>
         private IEnumerator CreateRemoteLocalAnchor()
         {
-            var net = MUES_Networking.Instance;
-            if (net == null || !net.isRemote || remoteSceneParent == null)
+            if (Net == null || !Net.isRemote || remoteSceneParent == null)
             {
                 ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] CreateRemoteLocalAnchor skipped - not applicable.", Color.yellow);
                 yield break;
@@ -739,17 +952,17 @@ namespace MUES.Core
 
             _remoteLocalAnchor = anchorGO.AddComponent<OVRSpatialAnchor>();
 
-            float timeout = 5f;
-            float elapsed = 0f;
-            while (!_remoteLocalAnchor.Created && elapsed < timeout)
-            {
-                elapsed += Time.deltaTime;
-                yield return null;
-            }
+            bool anchorCreated = false;
+            yield return WaitForConditionWithTimeout(
+                () => _remoteLocalAnchor.Created,
+                DefaultTimeout,
+                () => anchorCreated = false
+            );
+            anchorCreated = _remoteLocalAnchor.Created;
 
-            if (_remoteLocalAnchor.Created)
+            if (anchorCreated)
             {
-                _remoteStabilizer.Initialize(anchorPosition, anchorRotation);               
+                _remoteStabilizer.Initialize(anchorPosition, anchorRotation);
                 ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Remote local anchor created at {anchorPosition}. REMOTE_SCENE_PARENT will now be stabilized (mirrors colocated behavior).", Color.green);
             }
             else
@@ -757,8 +970,7 @@ namespace MUES.Core
                 ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] Failed to create remote local anchor - scene may drift on recenter.", Color.yellow);
                 Destroy(anchorGO);
                 _remoteLocalAnchor = null;
-
-                MUES_Networking.Instance.LeaveRoom();
+                Net.LeaveRoom();
             }
         }
 
@@ -767,8 +979,7 @@ namespace MUES.Core
         /// </summary>
         private void UpdateRemoteSceneParent()
         {
-            var net = MUES_Networking.Instance;
-            if (net == null || !net.isRemote || remoteSceneParent == null || !_remoteStabilizer.IsInitialized)
+            if (Net == null || !Net.isRemote || remoteSceneParent == null || !_remoteStabilizer.IsInitialized)
                 return;
 
             if (_remoteLocalAnchor == null || !_remoteLocalAnchor.Localized)
@@ -782,48 +993,10 @@ namespace MUES.Core
         #region Networking Methods
 
         /// <summary>
-        /// Sends the captured room data to other clients.
-        /// </summary>
-        public void SendRoomDataTo(PlayerRef player)
-        {
-            if (!MUES_Networking.Instance.Runner.IsSharedModeMasterClient)
-            {
-                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] SendRoomDataTo: no StateAuthority.", Color.red);
-                return;
-            }
-
-            string json = JsonUtility.ToJson(currentRoomData);
-            ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Sending room data to player {player}...", Color.cyan);
-            currentRoomData = null;
-
-            RPC_ReceiveRoomDataForPlayer(player, json);
-        }
-
-        /// <summary>
         /// Receives room data for a specific player and instantiates the geometry.
         /// </summary>
         [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
         private void RPC_ReceiveRoomDataForPlayer([RpcTarget] PlayerRef targetPlayer, string json, RpcInfo info = default) => SetRoomDataFromJson(json);
-
-        /// <summary>
-        /// Sets the current room data from a JSON string and instantiates geometry.
-        /// </summary>
-        public void SetRoomDataFromJson(string json)
-        {
-            currentRoomData = JsonUtility.FromJson<RoomData>(json);
-            ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] Room data received via JSON, instantiating geometry...", Color.green);
-            InstantiateRoomGeometry();
-        }
-
-        /// <summary>
-        /// Sets the current room data directly.
-        /// </summary>
-        public void SetRoomData(RoomData data)
-        {
-            currentRoomData = data;
-            ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] Room data object set directly, instantiating geometry...", Color.green);
-            InstantiateRoomGeometry();
-        }
 
         #endregion
 
@@ -837,24 +1010,7 @@ namespace MUES.Core
             Transform floorTransform = virtualRoom?.transform.Find("FLOOR") ?? GameObject.Find("FLOOR")?.transform;
 
             if (floorTransform != null)
-            {
-                var psGO = Instantiate(roomParticlesPrefab, floorTransform);
-                _particleSystem = psGO.GetComponent<ParticleSystem>();
-                _particleSystemRenderer = _particleSystem.GetComponent<ParticleSystemRenderer>();
-
-                var shape = _particleSystem.shape;
-
-                _particleSystem.transform.SetPositionAndRotation(transform.InverseTransformPoint(floorTransform.position - new Vector3(0, 1, 0)), floorTransform.rotation);
-                _particleSystem.transform.SetParent(floorTransform);
-
-                Transform firstChild = floorTransform.GetChild(0);
-                shape.radius = firstChild.GetComponent<MeshRenderer>().bounds.size.magnitude * 5;
-
-                var emission = _particleSystem.emission;
-                emission.rateOverTime = firstChild.transform.localScale.magnitude;
-
-                _particleSystem.Play();
-            }
+                SetupParticleSystem(floorTransform);
             else
                 ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] InitializeVisuals: Could not find FLOOR anchor! Particle effects skipped.", Color.yellow);
 
@@ -862,17 +1018,30 @@ namespace MUES.Core
                 if (anchor != null) anchor.localScale = Vector3.zero;
 
             sceneShown = false;
-            
             StartCoroutine(TeleportToFirstFreeChair());
         }
 
         /// <summary>
-        /// Toggles the visualization of the scene.
+        /// Sets up the particle system for room visualization.
         /// </summary>
-        public void ToggleVisualization()
+        private void SetupParticleSystem(Transform floorTransform)
         {
-            sceneShown = !sceneShown;
-            StartCoroutine(ToggleVisualizationRoutine(sceneShown));
+            var psGO = Instantiate(roomParticlesPrefab, floorTransform);
+            _particleSystem = psGO.GetComponent<ParticleSystem>();
+            _particleSystemRenderer = _particleSystem.GetComponent<ParticleSystemRenderer>();
+
+            var shape = _particleSystem.shape;
+
+            _particleSystem.transform.SetPositionAndRotation(transform.InverseTransformPoint(floorTransform.position - new Vector3(0, 1, 0)), floorTransform.rotation);
+            _particleSystem.transform.SetParent(floorTransform);
+
+            Transform firstChild = floorTransform.GetChild(0);
+            shape.radius = firstChild.GetComponent<MeshRenderer>().bounds.size.magnitude * 5;
+
+            var emission = _particleSystem.emission;
+            emission.rateOverTime = firstChild.transform.localScale.magnitude;
+
+            _particleSystem.Play();
         }
 
         /// <summary>
@@ -896,70 +1065,23 @@ namespace MUES.Core
             if (!isActive && _particleSystemRenderer != null) _particleSystemRenderer.enabled = false;
         }
 
-        /// <summary>
-        /// Clears the current room visualization.
-        /// </summary>
-        public void ClearRoomVisualization()
-        {
-            foreach (var old in instantiatedRoomPrefabs)
-                if (old != null && old.transform != null)
-                    Destroy(old.transform.gameObject);
-
-            instantiatedRoomPrefabs.Clear();
-            chairsInScene.Clear();
-
-            if (virtualRoom != null)
-            {
-                Destroy(virtualRoom);
-                virtualRoom = null;
-            }
-
-            if (_remoteLocalAnchor != null)
-            {
-                Destroy(_remoteLocalAnchor.gameObject);
-                _remoteLocalAnchor = null;
-            }
-            
-            if (remoteSceneParent != null)
-            {
-                Destroy(remoteSceneParent.gameObject);
-                remoteSceneParent = null;
-            }
-            
-            _remoteStabilizer.Reset();
-        }
-
-        /// <summary>
-        /// Renders or hides the room geometry by adjusting the camera's culling mask.
-        /// </summary>
-        public void RenderRoomGeometry(bool render)
-        {
-            int combinedMask = LayerMask.GetMask("MUES_RoomGeometry", "MUES_Wall");
-            Camera cam = Camera.main;
-
-            if (render) cam.cullingMask |= combinedMask;
-            else cam.cullingMask &= ~combinedMask;
-
-            OnRoomGeometryRenderChanged?.Invoke(render);
-        }
-
-        /// <summary>
-        /// Toggles the visibility of the scene while a loading process is in progress.
-        /// </summary>
-        public void HideSceneWhileLoading(bool hide)
-        {
-            Camera cam = Camera.main;
-            if (cam == null) return;
-
-            cam.cullingMask = hide ? LayerMask.GetMask("MUES_RenderWhileLoading") : originalCullingMask | LayerMask.GetMask("MUES_Floor");
-
-            if (hide)
-                OnLoadingStarted?.Invoke();
-            else
-                OnLoadingEnded?.Invoke();
-        }
-
         #endregion
+
+        /// <summary>
+        /// Waits for a condition to become true within the specified timeout period.
+        /// </summary>
+        private IEnumerator WaitForConditionWithTimeout(Func<bool> condition, float timeout = DefaultTimeout, Action onTimeout = null)
+        {
+            float elapsed = 0f;
+            while (!condition() && elapsed < timeout)
+            {
+                elapsed += Time.deltaTime;
+                yield return null;
+            }
+
+            if (elapsed >= timeout)
+                onTimeout?.Invoke();
+        }
     }
 
     #region Data Classes
@@ -1003,8 +1125,19 @@ namespace MUES.Core
             localScale[2] = givenLocalScale.z;
         }
 
+        /// <summary>
+        /// Converts the stored position data to a Vector3.
+        /// </summary>
         public Vector3 ToPosition() => new(localPosition[0], localPosition[1], localPosition[2]);
+
+        /// <summary>
+        /// Converts the stored rotation data to a Quaternion.
+        /// </summary>
         public Quaternion ToRotation() => new(localRotation[0], localRotation[1], localRotation[2], localRotation[3]);
+
+        /// <summary>
+        /// Converts the stored scale data to a Vector3.
+        /// </summary>
         public Vector3 ToScale() => new(localScale[0], localScale[1], localScale[2]);
     }
 
@@ -1039,6 +1172,9 @@ namespace MUES.Core
             uv[1] = givenUV.y;
         }
 
+        /// <summary>
+        /// Creates a mesh from vertex data and triangles.
+        /// </summary>
         public static Mesh CreateMeshFromVertexData(VertexData[] vertexData, int[] triangles)
         {
             if (vertexData == null || vertexData.Length == 0)

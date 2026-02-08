@@ -11,8 +11,6 @@ using UnityEngine.SceneManagement;
 using static Meta.XR.MultiplayerBlocks.Shared.CustomMatchmaking;
 using static OVRInput;
 using Meta.XR;
-using UnityEngine.EventSystems;
-
 
 #if UNITY_EDITOR
 using UnityEditor;
@@ -70,7 +68,8 @@ namespace MUES.Core
         private bool isCreatingRoom, isInitalizingRoomCreation; // Room creation state flags.
         private bool qrCodeScanning;    // Flag indicating if QR code scanning is active.
         private EstimatedRoomCreationQuality estimatedRoomQuality = EstimatedRoomCreationQuality.Poor; // Estimated quality of the room creation.
-        
+        private const float DefaultComponentTimeout = 7f;
+
         [HideInInspector] public MRUKRoom activeRoom; // Reference to the active MRUKRoom used for lobby creation.
 
         private MUES_SceneParentStabilizer _sceneParentStabilizer;
@@ -345,6 +344,8 @@ namespace MUES.Core
                 ConsoleMessage.Send(debugMode, "Room scene loading failed or timed out. - Do you have a scanned room on your headset?", Color.red);
                 return;
             }
+
+            MUES_RoomVisualizer.Instance.RenderRoomGeometry(false);
 
             ConsoleMessage.Send(debugMode, "Room geometry created - placing spatial anchor.", Color.green);
 
@@ -798,10 +799,7 @@ namespace MUES.Core
             yield return WaitForSessionMeta();
 
             if (MUES_SessionMeta.Instance == null)
-            {
-                AbortJoin("Timeout waiting for Session Meta (10s). Cannot join session.");
                 yield break;
-            }
 
             var meta = MUES_SessionMeta.Instance;
             ConsoleMessage.Send(debugMode, $"Session Meta found. AnchorGroup: {meta.AnchorGroup}, HostIP: {meta.HostIP}, LocalIP: {LocalIPAddress()}", Color.cyan);
@@ -819,34 +817,37 @@ namespace MUES.Core
                 if (!TryLoadSharedAnchors())
                     yield break;
 
-                float anchorTimeout = 10f;
-                float anchorElapsed = 0f;
                 OVRSpatialAnchor loadedAnchor = null;
+                bool anchorFound = false;
 
-                while (anchorElapsed < anchorTimeout)
-                {
-                    var anchorGO = GameObject.FindWithTag("RoomCenterAnchor");
-                    if (anchorGO != null)
+                yield return WaitForConditionWithTimeout(
+                    () =>
                     {
-                        loadedAnchor = anchorGO.GetComponent<OVRSpatialAnchor>();
-                        if (loadedAnchor != null && loadedAnchor.Localized)
+                        var anchorGO = GameObject.FindWithTag("RoomCenterAnchor");
+                        if (anchorGO != null)
                         {
-                            anchorTransform = anchorGO.transform;
-                            ConsoleMessage.Send(debugMode, $"Anchor localized at: {anchorTransform.position}", Color.green);
-                            break;
+                            loadedAnchor = anchorGO.GetComponent<OVRSpatialAnchor>();
+                            if (loadedAnchor != null && loadedAnchor.Localized)
+                            {
+                                anchorTransform = anchorGO.transform;
+                                anchorFound = true;
+                                return true;
+                            }
                         }
-                    }
+                        ConsoleMessage.Send(debugMode, $"Waiting for anchor localization... (Localized={loadedAnchor?.Localized})", Color.yellow);
+                        return false;
+                    },
+                    DefaultComponentTimeout,
+                    "Anchor localization"
+                );
 
-                    ConsoleMessage.Send(debugMode, $"Waiting for anchor localization... (Localized={loadedAnchor?.Localized})", Color.yellow);
-                    anchorElapsed += Time.deltaTime;
-                    yield return null;
-                }
-
-                if (anchorTransform == null || (loadedAnchor != null && !loadedAnchor.Localized))
+                if (!anchorFound)
                 {
                     AbortJoin("Failed to localize shared spatial anchor within timeout.");
                     yield break;
                 }
+
+                ConsoleMessage.Send(debugMode, $"Anchor localized at: {anchorTransform.position}", Color.green);
 
                 if (sceneParent == null) InitSceneParent();
 
@@ -867,14 +868,11 @@ namespace MUES.Core
                 Action onTeleportDone = () => teleportCompleted = true;
                 MUES_RoomVisualizer.OnTeleportCompleted += onTeleportDone;
 
-                float teleportTimeout = 10f;
-                float teleportElapsed = 0f;
-
-                while (!teleportCompleted && teleportElapsed < teleportTimeout)
-                {
-                    teleportElapsed += Time.deltaTime;
-                    yield return null;
-                }
+                yield return WaitForConditionWithTimeout(
+                    () => teleportCompleted,
+                    DefaultComponentTimeout,
+                    null
+                );
 
                 MUES_RoomVisualizer.OnTeleportCompleted -= onTeleportDone;
 
@@ -907,22 +905,22 @@ namespace MUES.Core
         }
 
         /// <summary>
-        /// Waits until the MUES_SessionMeta instance is available. Times out after 10 seconds.
+        /// Waits until the MUES_SessionMeta instance is available. Times out after 7 seconds.
         /// </summary>
         private IEnumerator WaitForSessionMeta()
         {
-            float timeout = 10f;
-            float elapsed = 0f;
+            bool success = false;
+            yield return WaitForConditionWithTimeout(
+                () => MUES_SessionMeta.Instance != null,
+                DefaultComponentTimeout,
+                "Session Meta",
+                result => success = result
+            );
 
-            while (MUES_SessionMeta.Instance == null)
+            if (!success)
             {
-                elapsed += Time.deltaTime;
-                if (elapsed >= timeout)
-                {
-                    AbortJoin("Timeout waiting for Session Meta (10s). Cannot join session.");
-                    yield break;
-                }
-                yield return null;
+                AbortJoin($"Timeout waiting for Session Meta ({DefaultComponentTimeout}s). Cannot join session.");
+                yield break;
             }
         }
 
@@ -931,11 +929,43 @@ namespace MUES.Core
         /// </summary>
         private IEnumerator WaitForJoinEnabled(MUES_SessionMeta meta)
         {
-            while (!meta.JoinEnabled)
+            yield return WaitForConditionWithTimeout(
+                () => meta.JoinEnabled,
+                DefaultComponentTimeout,
+                "Join enabled",
+                success =>
+                {
+                    if (!success)
+                        ConsoleMessage.Send(debugMode, "Waiting for host to enable joining...", Color.yellow);
+                }
+            );
+        }
+
+        /// <summary>
+        /// Waits for a condition to become true with a configurable timeout.
+        /// </summary>
+        public IEnumerator WaitForConditionWithTimeout(Func<bool> condition, float timeoutSeconds = DefaultComponentTimeout, string contextName = null, Action<bool> onComplete = null)
+        {
+            float elapsed = 0f;
+
+            while (!condition())
             {
-                ConsoleMessage.Send(debugMode, "Waiting for host to enable joining...", Color.yellow);
+                elapsed += Time.deltaTime;
+                if (elapsed >= timeoutSeconds)
+                {
+                    if (!string.IsNullOrEmpty(contextName))
+                        ConsoleMessage.Send(debugMode, $"Timeout waiting for {contextName} ({timeoutSeconds}s).", Color.red);
+
+                    onComplete?.Invoke(false);
+                    yield break;
+                }
                 yield return null;
             }
+
+            if (!string.IsNullOrEmpty(contextName))
+                ConsoleMessage.Send(debugMode, $"{contextName} ready.", Color.green);
+
+            onComplete?.Invoke(true);
         }
 
         /// <summary>
@@ -988,7 +1018,7 @@ namespace MUES.Core
         {
             if (anchorGroupUuid == Guid.Empty)
             {
-                AbortJoin("No valid anchorGroupUuid set  cannot load shared anchors.");
+                AbortJoin("No valid anchorGroupUuid set - cannot load shared anchors.");
                 return false;
             }
 
@@ -1608,3 +1638,4 @@ public class MUES_NetworkingEditor : Editor
 }
 
 #endif
+

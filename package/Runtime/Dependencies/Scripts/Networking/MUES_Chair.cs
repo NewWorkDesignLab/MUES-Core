@@ -1,6 +1,5 @@
 using Fusion;
 using System.Collections;
-using System.Reflection;
 using UnityEngine;
 
 namespace MUES.Core
@@ -23,15 +22,18 @@ namespace MUES.Core
 
         private MUES_NetworkedTransform _networkedTransform;    // Reference to the NetworkedTransform component
 
-        private static readonly FieldInfo _isBeingGrabbedField =
-            typeof(MUES_NetworkedTransform).GetField("_isBeingGrabbed", BindingFlags.NonPublic | BindingFlags.Instance);    // Reflection field info for _isBeingGrabbed
+        /// <summary>
+        /// Checks if the current client has authority over this object.
+        /// </summary>
+        private bool HasAuthority => Object != null && Object.IsValid && (Object.HasStateAuthority || Object.HasInputAuthority);
 
         public override void Spawned()
         {
             base.Spawned();
 
-            if (MUES_RoomVisualizer.Instance != null && !MUES_RoomVisualizer.Instance.chairsInScene.Contains(this))
-                MUES_RoomVisualizer.Instance.chairsInScene.Add(this);
+            var roomVis = MUES_RoomVisualizer.Instance;
+            if (roomVis != null && !roomVis.chairsInScene.Contains(this))
+                roomVis.chairsInScene.Add(this);
 
             _networkedTransform = GetComponent<MUES_NetworkedTransform>();
 
@@ -45,24 +47,14 @@ namespace MUES.Core
         {
             yield return InitAnchorRoutine();
 
-            if (Object.HasStateAuthority || Object.HasInputAuthority)
+            if (HasAuthority)
             {
                 WorldToAnchor();
                 ConsoleMessage.Send(true, $"Chair - Authority initialized anchor offset: {LocalAnchorOffset}", Color.cyan);
             }
             else
             {
-                float timeout = 5f;
-                float elapsed = 0f;
-
-                while (LocalAnchorOffset == Vector3.zero &&
-                       LocalAnchorRotationOffset == Quaternion.identity &&
-                       elapsed < timeout)
-                {
-                    elapsed += Time.deltaTime;
-                    yield return null;
-                }
-
+                yield return WaitForAnchorOffset();
                 AnchorToWorld();
                 ConsoleMessage.Send(true, $"Chair - Non-authority applied anchor offset: {LocalAnchorOffset}", Color.cyan);
             }
@@ -71,11 +63,22 @@ namespace MUES.Core
         }
 
         /// <summary>
+        /// Waits for the anchor offset to be received from the network.
+        /// </summary>
+        private IEnumerator WaitForAnchorOffset()
+        {
+            yield return WaitForCondition(
+                () => LocalAnchorOffset != Vector3.zero || LocalAnchorRotationOffset != Quaternion.identity,
+                DefaultTimeout
+            );
+        }
+
+        /// <summary>
         /// Called every frame to update the visual representation for non-authority clients.
         /// </summary>
         public override void Render()
         {
-            if (initialized && !Object.HasStateAuthority && !Object.HasInputAuthority && anchorReady)
+            if (initialized && !HasAuthority && anchorReady)
                 AnchorToWorld();
         }
 
@@ -86,16 +89,16 @@ namespace MUES.Core
         {
             base.Despawned(runner, hasState);
 
-            if (MUES_RoomVisualizer.Instance != null && MUES_RoomVisualizer.Instance.chairsInScene != null)
+            var roomVis = MUES_RoomVisualizer.Instance;
+            if (roomVis?.chairsInScene == null) return;
+
+            try
             {
-                try
-                {
-                    MUES_RoomVisualizer.Instance.chairsInScene.Remove(this);
-                }
-                catch (System.Exception ex)
-                {
-                    Debug.LogWarning($"Chair - Failed to remove from chairsInScene: {ex.Message}");
-                }
+                roomVis.chairsInScene.Remove(this);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning($"Chair - Failed to remove from chairsInScene: {ex.Message}");
             }
         }
 
@@ -108,16 +111,22 @@ namespace MUES.Core
 
             try
             {
-                if (Object == null || !Object.IsValid) return;
-                if (!Object.HasStateAuthority && !Object.HasInputAuthority) return;
+                if (!HasAuthority) return;
             }
             catch { return; }
 
-            if (_networkedTransform != null && IsNetworkedTransformGrabbed())
+            if (_networkedTransform != null && _networkedTransform._isBeingGrabbed)
                 WorldToAnchor();
 
-            GetDetectionBoxParams(out Vector3 center, out Vector3 halfSize);
+            UpdateOccupancy();
+        }
 
+        /// <summary>
+        /// Updates the occupancy state based on physics overlap detection.
+        /// </summary>
+        private void UpdateOccupancy()
+        {
+            GetDetectionBoxParams(out Vector3 center, out Vector3 halfSize);
             int hits = Physics.OverlapBoxNonAlloc(center, halfSize, _results, transform.rotation, detectionLayer);
 
             try
@@ -126,15 +135,6 @@ namespace MUES.Core
                     IsOccupied = hits > 0;
             }
             catch { }
-        }
-
-        /// <summary>
-        /// Checks if the NetworkedTransform is currently being grabbed.
-        /// </summary>
-        private bool IsNetworkedTransformGrabbed()
-        {
-            if (_networkedTransform == null || _isBeingGrabbedField == null) return false;
-            return (bool)_isBeingGrabbedField.GetValue(_networkedTransform);
         }
 
         /// <summary>
