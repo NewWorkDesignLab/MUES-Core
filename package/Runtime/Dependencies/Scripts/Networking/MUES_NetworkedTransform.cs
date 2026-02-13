@@ -569,7 +569,14 @@ namespace MUES.Core
         private void PostProcessModel(Transform wrapper)
         {
             SetLayerRecursively(wrapper, LayerMask.NameToLayer("Default"));
-            DisableEnvironmentDepthOcclusionForModel(wrapper);
+            
+            // Check if occlusion should be enabled via RoomVisualizer
+            bool useOcclusion = MUES_RoomVisualizer.Instance != null && MUES_RoomVisualizer.Instance.useOcclusion;
+            
+            if (useOcclusion)
+                ApplyOcclusionShaderToModel(wrapper);
+            else
+                DisableEnvironmentDepthOcclusionForModel(wrapper);
         }
 
         /// <summary>
@@ -616,6 +623,66 @@ namespace MUES.Core
             material.DisableKeyword("HARD_OCCLUSION");
             material.DisableKeyword("SOFT_OCCLUSION");
             material.EnableKeyword("_ENVIRONMENTDEPTHOCCLUSION_OFF");
+        }
+
+        /// <summary>
+        /// Applies the EnvironmentDepth/OcclusionLit shader to all renderers in the model.
+        /// </summary>
+        private void ApplyOcclusionShaderToModel(Transform root)
+        {
+            if (OcclusionShader == null)
+            {
+                ConsoleMessage.Send(true, "Networked Transform - EnvironmentDepth/OcclusionLit shader not found! Falling back to disabling occlusion.", Color.yellow);
+                DisableEnvironmentDepthOcclusionForModel(root);
+                return;
+            }
+
+            var renderers = root.GetComponentsInChildren<Renderer>(true);
+            int materialCount = 0;
+
+            foreach (var renderer in renderers)
+            {
+                if (renderer == null) continue;
+
+                Material[] materials = renderer.materials;
+                for (int i = 0; i < materials.Length; i++)
+                {
+                    if (materials[i] == null) continue;
+
+                    Material originalMat = materials[i];
+                    Material newMat = new Material(OcclusionShader);
+
+                    CopyMaterialProperties(originalMat, newMat);
+
+                    materials[i] = newMat;
+                    materialCount++;
+                }
+                renderer.materials = materials;
+            }
+
+            ConsoleMessage.Send(true, $"Networked Transform - Applied OcclusionLit shader to {materialCount} materials on {renderers.Length} renderers.", Color.green);
+        }
+
+        /// <summary>
+        /// Copies common material properties from source to destination material.
+        /// </summary>
+        private void CopyMaterialProperties(Material source, Material dest)
+        {
+            if (source.HasProperty("_MainTex") && dest.HasProperty("_MainTex"))
+                dest.SetTexture("_MainTex", source.GetTexture("_MainTex"));
+
+            if (source.HasProperty("_Color") && dest.HasProperty("_Color"))
+                dest.SetColor("_Color", source.GetColor("_Color"));
+            else if (source.HasProperty("_BaseColor") && dest.HasProperty("_Color"))
+                dest.SetColor("_Color", source.GetColor("_BaseColor"));
+
+            if (source.HasProperty("_Metallic") && dest.HasProperty("_Metallic"))
+                dest.SetFloat("_Metallic", source.GetFloat("_Metallic"));
+
+            if (source.HasProperty("_Glossiness") && dest.HasProperty("_Glossiness"))
+                dest.SetFloat("_Glossiness", source.GetFloat("_Glossiness"));
+            else if (source.HasProperty("_Smoothness") && dest.HasProperty("_Glossiness"))
+                dest.SetFloat("_Glossiness", source.GetFloat("_Smoothness"));
         }
 
         /// <summary>
@@ -780,6 +847,8 @@ namespace MUES.Core
             _isBeingGrabbed = false;
             CacheCurrentPosition();
         }
+
+        #endregion
 
         /// <summary>
         /// Deletes this networked object. Only allowed for players who have control permission.
@@ -989,7 +1058,16 @@ namespace MUES.Core
                 _grabbable.WhenPointerEventRaised -= OnPointerEvent;
         }
 
-        #endregion
+        private static Shader _occlusionShader;
+        private static Shader OcclusionShader
+        {
+            get
+            {
+                if (_occlusionShader == null)
+                    _occlusionShader = Shader.Find("EnvironmentDepth/OcclusionLit");
+                return _occlusionShader;
+            }
+        }
     }
 }
 
