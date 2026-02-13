@@ -1,6 +1,6 @@
 {
   "name": "com.newworkdesignlab.mues-core-nwdl",
-  "displayName": "MUES Core",
+  "displayName": "MUES Core - NWDL",
   "version": "1.1.2",
   "unity": "6000.0",
   "description": "Package with multiuser environment sharing functionality for XR Applications in Unity 6.",
