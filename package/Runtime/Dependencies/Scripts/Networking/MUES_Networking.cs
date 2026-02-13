@@ -13,7 +13,6 @@ using static OVRInput;
 using Meta.XR;
 using UnityEngine.UI;
 
-
 #if UNITY_EDITOR
 using UnityEditor;
 using MUES.Core;
@@ -56,7 +55,7 @@ namespace MUES.Core
         public bool showAvatarsForColocated = false;
         [Tooltip("Forces the client into remote mode.")]
         public bool forceClientRemote = false;
-        [Tooltip("Flag to determine whether to use a custom room model instead of the scanned room geometry.")]
+        [Tooltip("Flag to determine whether to use a custom room model instead of the scanned room geometry. The custom room model has to be saved on each clients device.")]
         public bool useCustomRoomModel = false;
 
         [HideInInspector] public Guid anchorGroupUuid;  // The UUID for the shared spatial anchor group.
@@ -189,11 +188,6 @@ namespace MUES.Core
         public static event Action<bool> OnQRCodeScanningStateChanged;
 
         /// <summary>
-        /// Fired when the custom room model is ready to be initialized and to be used instead of the scanned room geometry.
-        /// </summary>
-        public static event Action OnCustomRoomInit;
-
-        /// <summary>
         /// Fired when room scanning is finished with positive result.
         /// </summary>
         public static event Action OnSpaceSetupCompleted;
@@ -202,11 +196,6 @@ namespace MUES.Core
         /// Invokes the OnPlayerJoined event for the specified player.
         /// </summary>
         public void InvokeOnPlayerJoined(PlayerRef player) => OnPlayerJoined?.Invoke(player);
-
-        /// <summary>
-        /// Invokes the OnCustomRoomInit event.
-        /// </summary>
-        public void InvokeOnCustomRoomInit() => OnCustomRoomInit?.Invoke();
 
         #endregion
 
@@ -331,7 +320,7 @@ namespace MUES.Core
         if (!GetDown(RawButton.RIndexTrigger, Controller.RTouch)) return;
 
         ConsoleMessage.Send(debugMode, "Room creation confirmed by user input.", Color.green);
-        isInitalizingRoomCreation = false;
+        isInitializingRoomCreation = false;
         InitSharedRoom();
 #else
             ConsoleMessage.Send(debugMode, "UnityEditor - Skipping depth raycasting - Room scanning quality may be lower.", Color.yellow);
@@ -355,7 +344,6 @@ namespace MUES.Core
                 OVRCameraRig customRoomRig = FindFirstObjectByType<OVRCameraRig>();
                 Vector3 anchorPosition = customRoomRig != null ? customRoomRig.trackingSpace.position : Vector3.zero;
                 Quaternion anchorRotation = Quaternion.identity;
-                
 
                 spatialAnchorCore.InstantiateSpatialAnchor(roomMiddleAnchor, anchorPosition, anchorRotation);
                 return;
@@ -631,6 +619,8 @@ namespace MUES.Core
 
                 if (roomVis != null && roomVis.HasRoomData)
                     MUES_SessionMeta.Instance.SetRoomData(roomVis.GetCurrentRoomData());
+                
+                MUES_SessionMeta.Instance.UseCustomRoomModel = useCustomRoomModel;
             }
 
             MUES_SessionMeta.Instance.JoinEnabled = true;
@@ -733,6 +723,7 @@ namespace MUES.Core
 
             _sessionMeta.AnchorGroup = anchorGroupUuid.ToString();
             _sessionMeta.HostIP = LocalIPAddress();
+            _sessionMeta.UseCustomRoomModel = useCustomRoomModel;
 
             if (sceneParent != null)
             {
@@ -740,7 +731,7 @@ namespace MUES.Core
                 ConsoleMessage.Send(debugMode, $"Session meta updated with sceneParent pose: pos={sceneParent.position}, rot={sceneParent.rotation.eulerAngles}", Color.cyan);
             }
 
-            ConsoleMessage.Send(debugMode, $"Session meta set: AnchorGroup={_sessionMeta.AnchorGroup}, HostIP={_sessionMeta.HostIP}", Color.cyan);
+            ConsoleMessage.Send(debugMode, $"Session meta set: AnchorGroup={_sessionMeta.AnchorGroup}, HostIP={_sessionMeta.HostIP}, UseCustomRoomModel={_sessionMeta.UseCustomRoomModel}", Color.cyan);
         }
 
         #endregion
@@ -920,7 +911,15 @@ namespace MUES.Core
                 ConsoleMessage.Send(debugMode, $"Colocated client - anchor at {anchorTransform.position}, sceneParent at {sceneParent?.position}", Color.green);
             }
 
-            if (!TryLoadRoomData(meta, player))
+            bool roomDataLoaded = false;
+            bool roomDataLoadComplete = false;
+            yield return TryLoadRoomData(meta, player, success =>
+            {
+                roomDataLoaded = success;
+                roomDataLoadComplete = true;
+            });
+
+            if (!roomDataLoadComplete || !roomDataLoaded)
             {
                 AbortJoin("Failed to load room data.");
                 yield break;
@@ -1125,20 +1124,28 @@ namespace MUES.Core
         /// <summary>
         /// Attempts to load room data for the specified session and player.
         /// </summary>
-        private bool TryLoadRoomData(MUES_SessionMeta meta, PlayerRef player)
+        private IEnumerator TryLoadRoomData(MUES_SessionMeta meta, PlayerRef player, Action<bool> onComplete)
         {
-            if (useCustomRoomModel)
+            bool hostUsesCustomRoom = meta.UseCustomRoomModel;
+
+            if (hostUsesCustomRoom)
             {
-                ConsoleMessage.Send(debugMode, "Custom room model used - skipping room data loading, firing OnCustomRoomInit.", Color.cyan);
-                
-                OnCustomRoomInit?.Invoke();
-                return true;
+                ConsoleMessage.Send(debugMode, "Host uses custom room model - skipping room data loading, initializing remote scene parent first.", Color.cyan);      
+                useCustomRoomModel = true;
+
+                if (isRemote)
+                    yield return InitializeRemoteForCustomRoom();
+
+                MUES_RoomVisualizer.InvokeOnCustomRoomInit();
+                onComplete?.Invoke(true);
+                yield break;
             }
 
             if (!isRemote)
             {
                 ConsoleMessage.Send(debugMode, "Colocated client - room loading disabled - skipping room data loading.", Color.cyan);
-                return true;
+                onComplete?.Invoke(true);
+                yield break;
             }
 
             RoomData storedRoomData = null;
@@ -1152,7 +1159,7 @@ namespace MUES.Core
                 {
                     retryCount++;
                     ConsoleMessage.Send(debugMode, $"[MUES_Networking] Waiting for room data sync... (attempt {retryCount}/{maxRetries})", Color.yellow);
-                    System.Threading.Thread.Sleep(200);
+                    yield return new WaitForSeconds(0.2f);
                 }
             }
 
@@ -1160,12 +1167,118 @@ namespace MUES.Core
             {
                 ConsoleMessage.Send(debugMode, "[MUES_Networking] Loading room data from Session Meta...", Color.cyan);
                 MUES_RoomVisualizer.Instance?.SetRoomData(storedRoomData);
-                return true;
+                onComplete?.Invoke(true);
+                yield break;
             }
 
             ConsoleMessage.Send(debugMode, "[MUES_Networking] Room data not found in Session Meta after retries. Remote client may not see room geometry.", Color.red);
-            return true;
+            onComplete?.Invoke(true);
         }
+
+        /// <summary>
+        /// Initializes the remote scene parent for custom room mode without chair teleportation.
+        /// </summary>
+        private IEnumerator InitializeRemoteForCustomRoom()
+        {
+            ConsoleMessage.Send(debugMode, "[MUES_Networking] Initializing remote scene parent for custom room mode...", Color.cyan);
+            
+            yield return MUES_RoomVisualizer.Instance?.InitializeRemoteSceneParentForCustomRoom();
+            yield return MUES_RoomVisualizer.Instance?.TeleportToFirstFreeChairForCustomRoom();
+        }
+
+        #endregion
+
+        #region Player Management
+
+        /// <summary>
+        /// Gets a list of all connected players in the session.
+        /// </summary>
+        private HashSet<PlayerRef> locallyMutedPlayers = new HashSet<PlayerRef>();
+
+        /// <summary>
+        /// Gets a list of all connected players in the session.
+        /// </summary>
+        public List<PlayerInfo> GetConnectedPlayers() => MUES_SessionMeta.Instance.GetAllPlayers();
+
+        /// <summary>
+        /// Gets a specific player by their PlayerRef.
+        /// </summary>
+        public PlayerInfo? GetPlayer(PlayerRef playerRef) => MUES_SessionMeta.Instance.GetPlayerByRef(playerRef);
+
+        /// <summary>
+        /// Kicks a player from the session by their PlayerRef.
+        /// </summary>
+        public void KickPlayer(PlayerRef playerRef)
+        {
+            if (Runner == null || !Runner.IsSharedModeMasterClient)
+            {
+                ConsoleMessage.Send(debugMode, "Only the host can kick players.", Color.red);
+                return;
+            }
+
+            if (playerRef == Runner.LocalPlayer)
+            {
+                ConsoleMessage.Send(debugMode, "Cannot kick yourself.", Color.yellow);
+                return;
+            }
+
+            var playerInfo = GetPlayer(playerRef);
+            string playerName = playerInfo.HasValue ? playerInfo.Value.PlayerName.ToString() : "Unknown";
+
+            Runner.Disconnect(playerRef);
+            ConsoleMessage.Send(true, $"Player \"{playerName}\" (Ref: {playerRef}) has been kicked from the session.", Color.yellow);
+        }
+
+        /// <summary>
+        /// Toggles the local mute state for a player by their PlayerRef.
+        /// </summary>
+        public void ToggleMutePlayer(PlayerRef playerRef)
+        {
+            bool currentlyMuted = IsPlayerLocallyMuted(playerRef);
+            SetLocalMuteStatusForPlayer(playerRef, !currentlyMuted);
+        }
+
+        /// <summary>
+        /// Checks if a player is locally muted by this user.
+        /// </summary>
+        public bool IsPlayerLocallyMuted(PlayerRef playerRef) => locallyMutedPlayers.Contains(playerRef);
+
+        /// <summary>
+        /// Locally mutes or unmutes a player by their PlayerRef.
+        /// </summary>
+        public void SetLocalMuteStatusForPlayer(PlayerRef playerRef, bool mute)
+        {
+            if (playerRef == Runner?.LocalPlayer)
+            {
+                ConsoleMessage.Send(debugMode, "Use local mute controls to mute yourself.", Color.yellow);
+                return;
+            }
+
+            var playerObject = Runner?.GetPlayerObject(playerRef);
+            var avatar = playerObject != null ? playerObject.GetComponent<MUES_AvatarMarker>() : null;
+
+            if (playerObject == null || avatar == null)
+            {
+                ConsoleMessage.Send(debugMode, $"Cannot mute player {playerRef} - avatar not found.", Color.red);
+                return;
+            }
+
+            if (mute) locallyMutedPlayers.Add(playerRef);
+            else locallyMutedPlayers.Remove(playerRef);
+
+            avatar.SetLocallyMuted(mute);
+
+            ConsoleMessage.Send(true, $"Player \"{avatar.PlayerName}\" has been locally {(mute ? "muted" : "unmuted")}.", Color.cyan);
+        }
+
+        /// <summary>
+        /// Clears all locally muted players.
+        /// </summary>
+        public void ClearLocalMuteList() => locallyMutedPlayers.Clear();
+
+        #endregion
+
+        #region Utility Methods
 
         /// <summary>
         /// Captures the room if needed by requesting a scene capture from the OVRSceneManager.
@@ -1347,7 +1460,7 @@ namespace MUES.Core
         }
 
         /// <summary>
-        /// Hindles the HMD mounted event to show loading text.
+        /// Handles the HMD mounted event to show loading text.
         /// </summary>
         private IEnumerator ShowLoadingOnHMDMounted()
         {
@@ -1578,96 +1691,6 @@ namespace MUES.Core
 
             ConsoleMessage.Send(debugMode, "Left room.", Color.yellow);
         }
-
-        #endregion
-
-        #region Player Management
-
-        /// <summary>
-        /// Gets a list of all connected players in the session.
-        /// </summary>
-        private HashSet<PlayerRef> locallyMutedPlayers = new HashSet<PlayerRef>();
-
-        /// <summary>
-        /// Gets a list of all connected players in the session.
-        /// </summary>
-        public List<PlayerInfo> GetConnectedPlayers() => MUES_SessionMeta.Instance.GetAllPlayers();
-
-        /// <summary>
-        /// Gets a specific player by their PlayerRef.
-        /// </summary>
-        public PlayerInfo? GetPlayer(PlayerRef playerRef) => MUES_SessionMeta.Instance.GetPlayerByRef(playerRef);
-
-        /// <summary>
-        /// Kicks a player from the session by their PlayerRef.
-        /// </summary>
-        public void KickPlayer(PlayerRef playerRef)
-        {
-            if (Runner == null || !Runner.IsSharedModeMasterClient)
-            {
-                ConsoleMessage.Send(debugMode, "Only the host can kick players.", Color.red);
-                return;
-            }
-
-            if (playerRef == Runner.LocalPlayer)
-            {
-                ConsoleMessage.Send(debugMode, "Cannot kick yourself.", Color.yellow);
-                return;
-            }
-
-            var playerInfo = GetPlayer(playerRef);
-            string playerName = playerInfo.HasValue ? playerInfo.Value.PlayerName.ToString() : "Unknown";
-
-            Runner.Disconnect(playerRef);
-            ConsoleMessage.Send(true, $"Player \"{playerName}\" (Ref: {playerRef}) has been kicked from the session.", Color.yellow);
-        }
-
-        /// <summary>
-        /// Toggles the local mute state for a player by their PlayerRef.
-        /// </summary>
-        public void ToggleMutePlayer(PlayerRef playerRef)
-        {
-            bool currentlyMuted = IsPlayerLocallyMuted(playerRef);
-            SetLocalMuteStatusForPlayer(playerRef, !currentlyMuted);
-        }
-
-        /// <summary>
-        /// Checks if a player is locally muted by this user.
-        /// </summary>
-        public bool IsPlayerLocallyMuted(PlayerRef playerRef) => locallyMutedPlayers.Contains(playerRef);
-
-        /// <summary>
-        /// Locally mutes or unmutes a player by their PlayerRef.
-        /// </summary>
-        public void SetLocalMuteStatusForPlayer(PlayerRef playerRef, bool mute)
-        {
-            if (playerRef == Runner?.LocalPlayer)
-            {
-                ConsoleMessage.Send(debugMode, "Use local mute controls to mute yourself.", Color.yellow);
-                return;
-            }
-
-            var playerObject = Runner?.GetPlayerObject(playerRef);
-            var avatar = playerObject != null ? playerObject.GetComponent<MUES_AvatarMarker>() : null;
-
-            if (playerObject == null || avatar == null)
-            {
-                ConsoleMessage.Send(debugMode, $"Cannot mute player {playerRef} - avatar not found.", Color.red);
-                return;
-            }
-
-            if (mute) locallyMutedPlayers.Add(playerRef);
-            else locallyMutedPlayers.Remove(playerRef);
-
-            avatar.SetLocallyMuted(mute);
-
-            ConsoleMessage.Send(true, $"Player \"{avatar.PlayerName}\" has been locally {(mute ? "muted" : "unmuted")}.", Color.cyan);
-        }
-
-        /// <summary>
-        /// Clears all locally muted players.
-        /// </summary>
-        public void ClearLocalMuteList() => locallyMutedPlayers.Clear();
 
         #endregion
     }

@@ -29,6 +29,9 @@ namespace MUES.Core
         [Tooltip("Whether new players are allowed to join the session.")]
         [Networked] public NetworkBool JoinEnabled { get; set; }
 
+        [Tooltip("Whether the host is using a custom room model instead of scanned room geometry.")]
+        [Networked] public NetworkBool UseCustomRoomModel { get; set; }
+
         [Tooltip("The host's scene parent world position for anchor synchronization.")]
         [Networked] public Vector3 HostSceneParentPosition { get; set; }
 

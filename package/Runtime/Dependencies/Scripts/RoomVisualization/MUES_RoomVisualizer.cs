@@ -17,6 +17,8 @@ namespace MUES.Core
         [Header("General Settings:")]
         [Tooltip("Button to save the room after placement.")]
         public Button saveRoomButton = Button.Two;
+        [Tooltip("Enables occlusion of the scene.")]
+        public bool useOcclusion = true;
 
         [Header("Object References:")]
         [Tooltip("Prefab for loading particles.")]
@@ -29,6 +31,8 @@ namespace MUES.Core
         public GameObject chairPrefab;
         [Tooltip("Networked prefab for chairs.")]
         public MUES_NetworkedTransform networkedChairPrefab;
+
+        public Material chairOcclusionMaterial;
         [Tooltip("Layer mask for floor raycasting during chair placement.")]
         public LayerMask floorLayer;
         [Tooltip("Size of the invisible floor plane for custom room models.")]
@@ -73,6 +77,11 @@ namespace MUES.Core
         public static float floorHeight = 0f; // Static variable to hold the floor height.
         public static MUES_RoomVisualizer Instance { get; private set; }
 
+        /// <summary>
+        /// Indicates if the remote scene parent is fully initialized and stabilized.
+        /// </summary>
+        public bool IsRemoteSceneParentReady => Net != null && Net.isRemote && remoteSceneParent != null && _remoteStabilizer.IsInitialized;
+
         #region Events
 
         /// <summary>
@@ -109,6 +118,21 @@ namespace MUES.Core
         /// Fired when the remote client has completed teleporting to a chair (or room center fallback).
         /// </summary>
         public static event Action OnTeleportCompleted;
+
+        /// <summary>
+        /// Invokes the OnTeleportCompleted event. Can be called from other classes.
+        /// </summary>
+        public static void InvokeOnTeleportCompleted() => OnTeleportCompleted?.Invoke();
+
+        /// <summary>
+        /// Fired when the custom room model is ready to be initialized and to be used instead of the scanned room geometry.
+        /// </summary>
+        public static event Action OnCustomRoomInit;
+
+        /// <summary>
+        /// Invokes the OnCustomRoomInit event. Can be called from other classes.
+        /// </summary>
+        public static void InvokeOnCustomRoomInit() => OnCustomRoomInit?.Invoke();
 
         #endregion
 
@@ -322,7 +346,7 @@ namespace MUES.Core
         /// <summary>
         /// Teleports the local OVRCameraRig to the first available chair in the scene. (REMOTE CLIENT ONLY)
         /// </summary>
-        public IEnumerator TeleportToFirstFreeChair()
+        public IEnumerator TeleportToFirstFreeChair(bool skipRoomGeometry = false)
         {
             if (Net == null || !Net.isRemote)
             {
@@ -338,6 +362,8 @@ namespace MUES.Core
             if (chairsInScene.Count == 0)
             {
                 ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] No chairs in scene to teleport to.", Color.yellow);
+                if (!skipRoomGeometry)
+                    yield return CreateRemoteLocalAnchor();
                 OnTeleportCompleted?.Invoke();
                 yield break;
             }
@@ -345,12 +371,178 @@ namespace MUES.Core
             ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Looking for free chair among {chairsInScene.Count} chairs...", Color.cyan);
 
             var targetChair = chairsInScene.FirstOrDefault(c => c != null && !c.IsOccupied)?.transform;
-            Vector3 targetPosition = GetTeleportTargetPosition(targetChair);
-
-            TeleportCameraRig(targetPosition);
+            
+            if (targetChair != null)
+            {
+                TeleportCameraRig(targetChair.position);
+                ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Teleported to chair at {targetChair.position}.", Color.green);
+            }
+            else if (!skipRoomGeometry)
+            {
+                Vector3 targetPosition = GetTeleportTargetPosition(null);
+                TeleportCameraRig(targetPosition);
+            }
 
             yield return CreateRemoteLocalAnchor();
             OnTeleportCompleted?.Invoke();
+        }
+
+        #endregion
+
+        #region Custom Room Model Support
+
+        /// <summary>
+        /// Spawns a custom room model prefab and parents it correctly for position syncing. (REMOTE CLIENT ONLY)
+        /// </summary>
+        public IEnumerator SpawnCustomRoomAsync(GameObject customRoomPrefab, Action<GameObject> onComplete = null, Vector3? localPosition = null, Quaternion? localRotation = null)
+        {
+            if (customRoomPrefab == null)
+            {
+                Debug.LogError("[MUES_RoomVisualizer] SpawnCustomRoomAsync: customRoomPrefab is null!");
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            var net = MUES_Networking.Instance;
+
+            bool connectionTimedOut = false;
+            yield return WaitForConditionWithTimeout(
+                () => net.isConnected,
+                10f,
+                () => connectionTimedOut = true
+            );
+
+            if (connectionTimedOut || !net.isConnected)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] SpawnCustomRoomAsync: Network connection timeout.", Color.red);
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+
+            if (net == null || !net.isRemote)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] SpawnCustomRoomAsync skipped - not a remote client.", Color.yellow);
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            yield return EnsureRemoteSceneParentInitialized();
+
+            if (remoteSceneParent == null)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] SpawnCustomRoomAsync: Failed to initialize remote scene parent.", Color.red);
+                onComplete?.Invoke(null);
+                yield break;
+            }
+
+            GameObject customRoom = Instantiate(customRoomPrefab);
+            customRoom.name = "CustomRoom";
+            customRoom.transform.SetParent(remoteSceneParent, false);
+            customRoom.transform.localPosition = localPosition ?? Vector3.zero;
+            customRoom.transform.localRotation = localRotation ?? Quaternion.identity;
+
+            virtualRoom = customRoom;
+
+            ConsoleMessage.Send(debugMode,
+                $"[MUES_RoomVisualizer] SpawnCustomRoomAsync: Spawned '{customRoomPrefab.name}' parented to {remoteSceneParent.name}. " +
+                $"Position: {customRoom.transform.position}",
+                Color.green);
+
+            onComplete?.Invoke(customRoom);
+        }
+
+        /// <summary>
+        /// Initializes the remote scene parent for custom room mode. (REMOTE CLIENT ONLY)
+        /// </summary>
+        public IEnumerator InitializeRemoteSceneParentForCustomRoom()
+        {
+            yield return EnsureRemoteSceneParentInitialized();
+        }
+
+        /// <summary>
+        /// Teleports to the first free chair for custom room mode. (REMOTE CLIENT ONLY)
+        /// </summary>
+        public IEnumerator TeleportToFirstFreeChairForCustomRoom()
+        {
+            yield return TeleportToFirstFreeChair(skipRoomGeometry: true);
+        }
+
+        /// <summary>
+        /// Ensures the remote scene parent is initialized and stabilized.
+        /// </summary>
+        private IEnumerator EnsureRemoteSceneParentInitialized()
+        {
+            if (Net == null || !Net.isRemote)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] EnsureRemoteSceneParentInitialized: Skipped - not a remote client.", Color.yellow);
+                yield break;
+            }
+
+            if (remoteSceneParent != null && _remoteStabilizer.IsInitialized)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] EnsureRemoteSceneParentInitialized: Already initialized.", Color.cyan);
+                yield break;
+            }
+
+            yield return WaitForConditionWithTimeout(() => Net.isConnected, DefaultTimeout);
+
+            if (!Net.isConnected)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] EnsureRemoteSceneParentInitialized: Connection timeout.", Color.red);
+                yield break;
+            }
+
+            if (remoteSceneParent == null)
+            {
+                remoteSceneParent = GetOrCreateRemoteSceneParent();
+                remoteSceneParent.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] EnsureRemoteSceneParentInitialized: Created remote scene parent at origin.", Color.cyan);
+            }
+
+            if (!_remoteStabilizer.IsInitialized)
+                yield return CreateRemoteLocalAnchorInternal(remoteSceneParent.position, remoteSceneParent.rotation, "RemoteLocalAnchor");
+        }
+
+        /// <summary>
+        /// Creates a local spatial anchor for remote clients.
+        /// </summary>
+        private IEnumerator CreateRemoteLocalAnchorInternal(Vector3 anchorPosition, Quaternion anchorRotation, string anchorName)
+        {
+            if (_remoteLocalAnchor != null)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] CreateRemoteLocalAnchorInternal: Anchor already exists.", Color.cyan);
+                yield break;
+            }
+
+            GameObject anchorGO = new GameObject(anchorName);
+            anchorGO.transform.SetPositionAndRotation(anchorPosition, anchorRotation);
+
+            _remoteLocalAnchor = anchorGO.AddComponent<OVRSpatialAnchor>();
+
+            yield return WaitForConditionWithTimeout(
+                () => _remoteLocalAnchor != null && _remoteLocalAnchor.Created,
+                DefaultTimeout
+            );
+
+            if (_remoteLocalAnchor == null)
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] CreateRemoteLocalAnchorInternal: Anchor was destroyed during creation.", Color.yellow);
+                if (anchorGO != null) Destroy(anchorGO);
+                yield break;
+            }
+
+            if (_remoteLocalAnchor.Created)
+            {
+                _remoteStabilizer.Initialize(anchorPosition, anchorRotation);
+                ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] CreateRemoteLocalAnchorInternal: Anchor created at {anchorPosition}. Scene parent will be stabilized.", Color.green);
+            }
+            else
+            {
+                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] CreateRemoteLocalAnchorInternal: Failed to create anchor - scene may drift on recenter.", Color.yellow);
+                Destroy(anchorGO);
+                _remoteLocalAnchor = null;
+            }
         }
 
         #endregion
@@ -368,8 +560,6 @@ namespace MUES.Core
             {
                 ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] CaptureRoomRoutine: useCustomRoomModel enabled, creating invisible floor for chair placement.", Color.cyan);
                 CreateInvisibleFloorForCustomRoom();
-                
-                Net.InvokeOnCustomRoomInit();
                 
                 yield return SwitchToChairPlacement(true);
                 yield break;
@@ -714,15 +904,12 @@ namespace MUES.Core
                 Destroy(previewChair);
                 
                 if (floor != null && floor.transform.parent != null)
-                {
-                    if (Net != null && Net.useCustomRoomModel)
-                        floor.transform.parent.gameObject.SetActive(false);
-                    else
-                        Destroy(floor.transform.parent.gameObject);
-                }
+                    Destroy(floor.transform.parent.gameObject);
+                
+                floor = null;
 
                 foreach (var table in currentTableTransforms)
-                    Destroy(table.gameObject);
+                    if (table != null) Destroy(table.gameObject);
 
                 currentTableTransforms.Clear();
             }
@@ -758,6 +945,13 @@ namespace MUES.Core
             {
                 Quaternion finalRot = rotation ?? previewChair.transform.rotation;
                 MUES_NetworkedObjectManager.Instance.Instantiate(networkedChairPrefab, position, finalRot, out MUES_NetworkedTransform spawnedObj);
+
+                if(useOcclusion)
+                {
+                    MeshRenderer[] renderers = spawnedObj.GetComponentsInChildren<MeshRenderer>();
+                    foreach (var rend in renderers)
+                        rend.material = chairOcclusionMaterial;
+                }    
 
                 bool spawnComplete = false;
                 yield return WaitForConditionWithTimeout(() => spawnedObj != null, 1f, () => spawnComplete = false);
@@ -1032,42 +1226,7 @@ namespace MUES.Core
                 yield break;
             }
 
-            Vector3 anchorPosition = remoteSceneParent.position;
-            Quaternion anchorRotation = remoteSceneParent.rotation;
-
-            GameObject anchorGO = new GameObject("RemoteLocalAnchor");
-            anchorGO.transform.SetPositionAndRotation(anchorPosition, anchorRotation);
-
-            _remoteLocalAnchor = anchorGO.AddComponent<OVRSpatialAnchor>();
-
-            bool anchorCreated = false;
-            yield return WaitForConditionWithTimeout(
-                () => _remoteLocalAnchor != null && _remoteLocalAnchor.Created,
-                DefaultTimeout,
-                () => anchorCreated = false
-            );
-            
-            if (_remoteLocalAnchor == null)
-            {
-                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] Remote local anchor was destroyed during creation.", Color.yellow);
-                if (anchorGO != null) Destroy(anchorGO);
-                yield break;
-            }
-            
-            anchorCreated = _remoteLocalAnchor.Created;
-
-            if (anchorCreated)
-            {
-                _remoteStabilizer.Initialize(anchorPosition, anchorRotation);
-                ConsoleMessage.Send(debugMode, $"[MUES_RoomVisualizer] Remote local anchor created at {anchorPosition}. REMOTE_SCENE_PARENT will now be stabilized (mirrors colocated behavior).", Color.green);
-            }
-            else
-            {
-                ConsoleMessage.Send(debugMode, "[MUES_RoomVisualizer] Failed to create remote local anchor - scene may drift on recenter.", Color.yellow);
-                Destroy(anchorGO);
-                _remoteLocalAnchor = null;
-                Net?.LeaveRoom();
-            }
+            yield return CreateRemoteLocalAnchorInternal(remoteSceneParent.position, remoteSceneParent.rotation, "RemoteLocalAnchor");
         }
 
         /// <summary>

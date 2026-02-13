@@ -26,6 +26,7 @@ namespace MUES.Editor
         {
             "Sprites/Default",
             "UI/Default",
+            "EnvironmentDepth/URP/OcclusionUnlit"
         };
 
         private static readonly string[] PrefabSearchPaths = new string[]
